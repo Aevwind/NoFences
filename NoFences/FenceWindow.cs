@@ -1,4 +1,4 @@
-﻿using NoFences.Model;
+using NoFences.Model;
 using NoFences.Theming;
 using NoFences.Util;
 using NoFences.Win32;
@@ -35,7 +35,8 @@ namespace NoFences
         private readonly StringFormat standardIconTextFormat = new StringFormat
         {
             Alignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.LineLimit
         };
         private readonly StringFormat expandedIconTextFormat = new StringFormat
         {
@@ -335,9 +336,7 @@ namespace NoFences
 
             // 先初始化组件以创建窗口句柄（后续 DPI 相关操作需要 Handle）
             InitializeComponent();
-            iconManagementToolStripMenuItem.Text = ThemeText.IconManagement;
-            themeToolStripMenuItem.Text = ThemeText.ThemeMenu;
-            darkModeToolStripMenuItem.Text = ThemeText.DarkMode;
+            ApplyContextMenuLocalization();
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
 
             // 应用 Windows 视觉效果。DWM 投影需等主题圆角确定后再设置，
@@ -995,11 +994,32 @@ namespace NoFences
         }
 
         /// <summary>
+        /// 本地化右键上下文菜单的所有菜单项。
+        /// 解决在缺少 zh-CN 附属资源程序集（例如单文件绿色运行）时，
+        /// 菜单项出现中英文混杂的问题。
+        /// </summary>
+        private void ApplyContextMenuLocalization()
+        {
+            deleteItemToolStripMenuItem.Text = ThemeText.Get("删除项目", "Delete item");
+            lockedToolStripMenuItem.Text = ThemeText.Get("锁定", "Lock");
+            minifyToolStripMenuItem.Text = ThemeText.Get("收起窗口", "Minify");
+            renameToolStripMenuItem.Text = ThemeText.Get("重命名", "Rename");
+            titleSizeToolStripMenuItem.Text = ThemeText.Get("标题尺寸...", "Title size...");
+            iconManagementToolStripMenuItem.Text = ThemeText.IconManagement;
+            themeToolStripMenuItem.Text = ThemeText.ThemeMenu;
+            darkModeToolStripMenuItem.Text = ThemeText.DarkMode;
+            newFenceToolStripMenuItem.Text = ThemeText.Get("新建桌面分区", "New fence");
+            exitToolStripMenuItem.Text = ThemeText.Get("移除桌面分区", "Remove fence");
+            quitApplicationToolStripMenuItem.Text = ThemeText.Get("退出程序", "Exit application");
+        }
+
+        /// <summary>
         /// 在应用自有右键菜单打开前更新动态菜单项，并在最终布局完成后重新应用
         /// 当前主题。该菜单由空白处右键或条目上的 Shift+右键触发。
         /// </summary>
         private void contextMenuStrip1_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            ApplyContextMenuLocalization();
             deleteItemToolStripMenuItem.Visible = hoveringItem != null;
             iconManagementToolStripMenuItem.Enabled = !isIconManagementMode;
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;

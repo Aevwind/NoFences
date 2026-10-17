@@ -1,4 +1,4 @@
-﻿using NoFences.Model;
+using NoFences.Model;
 using System;
 using System.Threading;
 using System.Windows.Forms;

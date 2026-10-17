@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows.Forms;
 using NoFences.Theming;
 
@@ -16,10 +16,22 @@ namespace NoFences
         public HeightDialog(int val)
         {
             InitializeComponent();
+            ApplyLocalization();
             trackBarTitleHeight.Value = Math.Max(
                 trackBarTitleHeight.Minimum,
                 Math.Min(trackBarTitleHeight.Maximum, val));
             UpdateText();
+        }
+
+        /// <summary>
+        /// 本地化对话框控件文本，确保单文件独立运行时界面语言一致。
+        /// </summary>
+        private void ApplyLocalization()
+        {
+            Text = ThemeText.Get("修改标题高度", "Change title height");
+            btnOk.Text = ThemeText.Get("确定", "OK");
+            btnCancel.Text = ThemeText.Get("取消", "Cancel");
+            btnRestore.Text = ThemeText.Get("恢复默认值", "Restore default");
         }
 
         /// <summary>更新显示文本为当前值 + "px"。</summary>

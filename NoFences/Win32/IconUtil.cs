@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -18,7 +18,10 @@ namespace NoFences.Win32
         private static readonly Lazy<Icon> LinkOverlayIcon = new Lazy<Icon>(
             () => GetStockIcon(SHSIID_LINK, SHGSI_LARGEICON),
             true);
+        /// <summary>快捷方式覆盖层相对于图标尺寸的缩放比例（0.8 倍）。</summary>
         private const float ShortcutOverlayScale = 0.8f;
+        /// <summary>标准图标逻辑像素尺寸（48 逻辑像素对应 Windows 默认中等桌面图标）。</summary>
+        private const int StandardLogicalIconSize = 48;
 
         /// <summary>
         /// 获取系统文件夹大图标（带缓存）。
@@ -152,7 +155,7 @@ namespace NoFences.Win32
             }
         }
 
-        /// <summary>为快捷方式高分辨率图标重新叠加系统箭头覆盖层。</summary>
+        /// <summary>为快捷方式高分辨率图标重新叠加系统箭头覆盖层，并限制最大尺寸以防大图标下模糊或过大。</summary>
         private static void ApplyShortcutOverlay(string path, Bitmap bitmap)
         {
             string extension = Path.GetExtension(path);
@@ -172,12 +175,25 @@ namespace NoFences.Win32
                 graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
                 graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-                int overlayWidth = Math.Max(1, (int)Math.Round(
+
+                // 限制覆盖层最大尺寸为标准中等图标（48 逻辑像素）时的效果，随 DPI 缩放自适应
+                uint dpi = GetSystemDpi();
+                int maxOverlayWidth = Math.Max(1, (int)Math.Round(
+                    StandardLogicalIconSize * ShortcutOverlayScale * (dpi / 96.0f),
+                    MidpointRounding.AwayFromZero));
+                int maxOverlayHeight = Math.Max(1, (int)Math.Round(
+                    StandardLogicalIconSize * ShortcutOverlayScale * (dpi / 96.0f),
+                    MidpointRounding.AwayFromZero));
+
+                int targetOverlayWidth = Math.Max(1, (int)Math.Round(
                     bitmap.Width * ShortcutOverlayScale,
                     MidpointRounding.AwayFromZero));
-                int overlayHeight = Math.Max(1, (int)Math.Round(
+                int targetOverlayHeight = Math.Max(1, (int)Math.Round(
                     bitmap.Height * ShortcutOverlayScale,
                     MidpointRounding.AwayFromZero));
+
+                int overlayWidth = Math.Min(targetOverlayWidth, maxOverlayWidth);
+                int overlayHeight = Math.Min(targetOverlayHeight, maxOverlayHeight);
 
                 // 缩小覆盖层画布并保持左下角锚定，避免箭头向图标中央漂移
                 var overlayRectangle = new Rectangle(
@@ -189,6 +205,21 @@ namespace NoFences.Win32
                     overlayBitmap,
                     overlayRectangle);
             }
+        }
+
+        /// <summary>获取当前系统 DPI，获取失败时回退到 96 DPI。</summary>
+        private static uint GetSystemDpi()
+        {
+            try
+            {
+                uint dpi = GetDpiForSystem();
+                if (dpi > 0)
+                    return dpi;
+            }
+            catch
+            {
+            }
+            return 96;
         }
 
         /// <summary>将 Shell 返回的 32 位 HBITMAP 转换为保留 Alpha 通道的位图。</summary>
@@ -392,6 +423,9 @@ namespace NoFences.Win32
 
         [DllImport("user32.dll")]
         public static extern bool DestroyIcon(IntPtr handle);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForSystem();
 
         // 文件夹图标常量
         private const uint SHSIID_FOLDER = 0x3;

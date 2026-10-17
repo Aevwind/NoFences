@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows.Forms;
 using NoFences.Theming;
 
@@ -15,7 +15,19 @@ namespace NoFences
         public EditDialog(string oldName)
         {
             InitializeComponent();
+            ApplyLocalization();
             tbName.Text = oldName; // 预填当前名称
+        }
+
+        /// <summary>
+        /// 本地化对话框控件文本，确保单文件独立运行时界面语言一致。
+        /// </summary>
+        private void ApplyLocalization()
+        {
+            Text = ThemeText.Get("编辑", "Edit");
+            lbName.Text = ThemeText.Get("名称：", "Name:");
+            btnOk.Text = ThemeText.Get("确定", "OK");
+            btnCancel.Text = ThemeText.Get("取消", "Cancel");
         }
 
         private void btnOk_Click(object sender, EventArgs e)

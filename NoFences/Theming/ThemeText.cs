@@ -1,15 +1,25 @@
+using System;
 using System.Globalization;
 
 namespace NoFences.Theming
 {
     /// <summary>
-    /// Small runtime string table for the new theme UI. Existing legacy forms keep
-    /// using their resx resources; this avoids modifying generated resource files.
+    /// 运行时本地化字符串表。提供中英文双语支持，
+    /// 确保在缺少附属资源程序集或单文件绿色运行时界面语言一致。
     /// </summary>
     internal static class ThemeText
     {
-        public static bool IsChinese =>
-            CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "zh";
+        public static bool IsChinese
+        {
+            get
+            {
+                var uiLang = CultureInfo.CurrentUICulture?.TwoLetterISOLanguageName;
+                if (string.Equals(uiLang, "zh", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                var cultureLang = CultureInfo.CurrentCulture?.TwoLetterISOLanguageName;
+                return string.Equals(cultureLang, "zh", StringComparison.OrdinalIgnoreCase);
+            }
+        }
 
         public static string Get(string chinese, string english)
         {
