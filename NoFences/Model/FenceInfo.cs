@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace NoFences.Model
@@ -43,6 +43,9 @@ namespace NoFences.Model
 
         /// <summary>标题栏高度（逻辑像素，默认 35）</summary>
         public int TitleHeight { get; set; } = 35;
+
+        /// <summary>栅栏内图标与文本的缩放比例百分比（10~200，默认 100）</summary>
+        public int ScalePercent { get; set; } = 100;
 
         /// <summary>栅栏内包含的文件/文件夹路径列表</summary>
         public List<string> Files { get; set; } = new List<string>();

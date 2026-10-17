@@ -84,12 +84,22 @@ namespace NoFences
         private string backgroundImagePath;
         private long backgroundImageVersion;
         private readonly List<Image> themedMenuImages = new List<Image>();
+        private ScaleMenuControl scaleMenuControl;
         // Windows 11 顶层窗口的系统圆角为 8 个逻辑像素；由 DWM 同时裁剪
         // Acrylic 合成表面和窗口内容，避免 Form.Region 之外残留矩形模糊层。
         private const int NativeWindowCornerRadius = 8;
         private bool usesNativeWindowCorners;
         private bool fenceRemoved;
         private bool persistenceWarningShown;
+
+        /// <summary>获取当前栅栏有效的缩放比例百分比（10%~200%，默认 100%）。</summary>
+        private int GetEffectiveScalePercent()
+        {
+            int scale = fenceInfo != null ? fenceInfo.ScalePercent : ScaleMenuControl.DefaultScale;
+            if (scale < ScaleMenuControl.MinScale || scale > ScaleMenuControl.MaxScale)
+                return ScaleMenuControl.DefaultScale;
+            return scale;
+        }
 
         /// <summary>
         /// 将设备像素（物理像素）转换为逻辑像素（96 DPI 坐标）。
@@ -119,10 +129,11 @@ namespace NoFences
         /// <summary>
         /// 加载系统图标度量并计算栅栏项布局尺寸。
         /// 优先从桌面 SysListView32 读取实际图标间距（支持 Ctrl+滚轮缩放），
-        /// 回退到系统 SPI_GETICONMETRICS 的默认值。
+        /// 回退到系统 SPI_GETICONMETRICS 的默认值，并在此基准上叠加当前栅栏的缩放比例（10%~200%）。
         /// </summary>
         private void LoadAndApplyMetrics()
         {
+            float scaleFactor = GetEffectiveScalePercent() / 100f;
             try
             {
                 // 1. 通过 LVM_GETITEMSPACING 读取桌面 SysListView32 的实际图标间距（设备像素）
@@ -147,21 +158,29 @@ namespace NoFences
                 else
                     deviceItemWidth = LogicalPixelsToDevice(75);
 
-                // 5. 根据桌面实际间距计算单元格宽度
-                itemWidth = Math.Max(LogicalPixelsToDevice(60), deviceItemWidth);
-                // 6. 应用桌面当前视图的真实图标尺寸
+                // 5. 根据桌面实际间距计算基准单元格宽度与基准图标尺寸
+                int baseItemWidth = Math.Max(LogicalPixelsToDevice(60), deviceItemWidth);
                 int renderedIconSize;
                 if (logicalDesktopIconSize > 0)
                     renderedIconSize = LogicalPixelsToDevice(logicalDesktopIconSize);
                 else
                     renderedIconSize = LogicalPixelsToDevice(
-                        Math.Max(16, (int)(DevicePixelsToLogical(itemWidth) * 0.43))); // 回退到估算值
+                        Math.Max(16, (int)(DevicePixelsToLogical(baseItemWidth) * 0.43))); // 回退到估算值
 
                 // Shell 返回 DIP，GDI+ 绘制矩形使用设备像素，因此在此统一乘以 DPI 比例
-                iconSize = Math.Max(LogicalPixelsToDevice(16), renderedIconSize);
+                int baseIconSize = Math.Max(LogicalPixelsToDevice(16), renderedIconSize);
+                baseItemWidth = Math.Max(baseItemWidth, baseIconSize);
+
+                // 6. 在桌面基准尺寸之上叠加栅栏自定义缩放比例（10%~200%）
+                iconSize = Math.Max(
+                    LogicalPixelsToDevice(8),
+                    (int)Math.Round(baseIconSize * scaleFactor, MidpointRounding.AwayFromZero));
+                itemWidth = Math.Max(
+                    LogicalPixelsToDevice(24),
+                    (int)Math.Round(baseItemWidth * scaleFactor, MidpointRounding.AwayFromZero));
                 // 图标放大时单元格至少与图标同宽，避免相邻图标重叠
                 itemWidth = Math.Max(itemWidth, iconSize);
-                itemPadding = Math.Max(LogicalPixelsToDevice(8), (int)(itemWidth * 0.20));
+                itemPadding = Math.Max(LogicalPixelsToDevice(2), (int)(itemWidth * 0.20));
                 // 文字区域高度：按桌面图标字体行高 × 行数（iTitleWrap 启用时 2 行，否则 1 行）
                 using (var tmpFont = CreateIconFontFromLogFont())
                 using (var graphics = CreateGraphics())
@@ -173,11 +192,17 @@ namespace NoFences
             }
             catch
             {
-                // 读取失败时使用合理的硬编码默认值
-                itemWidth = LogicalPixelsToDevice(75);
-                iconSize = LogicalPixelsToDevice(32);
-                textHeight = LogicalPixelsToDevice(35);
-                itemPadding = LogicalPixelsToDevice(15);
+                // 读取失败时使用合理的硬编码默认值并叠加缩放比例
+                itemWidth = Math.Max(
+                    LogicalPixelsToDevice(24),
+                    (int)Math.Round(LogicalPixelsToDevice(75) * scaleFactor, MidpointRounding.AwayFromZero));
+                iconSize = Math.Max(
+                    LogicalPixelsToDevice(8),
+                    (int)Math.Round(LogicalPixelsToDevice(32) * scaleFactor, MidpointRounding.AwayFromZero));
+                textHeight = Math.Max(
+                    LogicalPixelsToDevice(10),
+                    (int)Math.Round(LogicalPixelsToDevice(35) * scaleFactor, MidpointRounding.AwayFromZero));
+                itemPadding = Math.Max(LogicalPixelsToDevice(2), (int)(itemWidth * 0.20));
                 itemHeight = iconSize + itemPadding / 3 + textHeight;
             }
         }
@@ -266,23 +291,38 @@ namespace NoFences
         }
 
         /// <summary>
+        /// 解析桌面渲染优先使用的字体族名称：当主题未指定自定义字体或仅使用预设默认英文字体时，
+        /// 优先采用系统 SPI_GETICONMETRICS 返回的本地化桌面字体（如 Microsoft YaHei UI），
+        /// 避免中文字符在 Segoe UI / Tahoma 下触发低质量字体回退导致字形发虚。
+        /// </summary>
+        private string ResolveDesktopFontFamily(string systemFaceName)
+        {
+            string themeFont = currentTheme?.FontFamilyName;
+            bool hasCustomThemeFont = !string.IsNullOrWhiteSpace(themeFont) &&
+                !string.Equals(themeFont, "Segoe UI", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(themeFont, "Tahoma", StringComparison.OrdinalIgnoreCase);
+
+            if (hasCustomThemeFont)
+                return themeFont;
+            if (!string.IsNullOrWhiteSpace(systemFaceName))
+                return systemFaceName;
+            if (!string.IsNullOrWhiteSpace(themeFont))
+                return themeFont;
+            return SystemFonts.IconTitleFont?.FontFamily?.Name ?? "Segoe UI";
+        }
+
+        /// <summary>
         /// 从 SPI_GETICONMETRICS 返回的 LOGFONT 结构体创建 .NET Font 对象。
         /// 不能使用 CreateFontIndirect + Font.FromHfont，因为 FromHfont 仅支持 TrueType 字体，
         /// 而桌面图标字体可能是非 TrueType 字体（如 MS Sans Serif），会抛出异常。
-        /// 改为直接读取 LOGFONT 各字段，手动构造常规字重 Font 对象；文字
-        /// 清晰度由 DPI 自适应的柔和阴影补足，避免小字号字形显得过粗。
+        /// 改为直接读取 LOGFONT 各字段，手动构造 Font 对象。
         /// </summary>
         private Font CreateIconFontFromLogFont()
         {
             try
             {
                 var lf = iconMetrics.lfFont;
-                string familyName = currentTheme != null &&
-                    !string.IsNullOrWhiteSpace(currentTheme.FontFamilyName)
-                        ? currentTheme.FontFamilyName
-                        : lf.lfFaceName;
-                if (string.IsNullOrWhiteSpace(familyName))
-                    familyName = "Segoe UI";
+                string familyName = ResolveDesktopFontFamily(lf.lfFaceName);
                 // lfHeight 是逻辑单位，需要转换为磅值（point）
                 float fontSize = Math.Abs(lf.lfHeight);
                 using (var g = CreateGraphics())
@@ -290,9 +330,9 @@ namespace NoFences
                     fontSize = fontSize * 72f / g.DpiY;
                 }
                 if (fontSize < 6f) fontSize = 9f; // 最小字号保护
-                // 使用字体的常规字重，并继续应用 LOGFONT 中的斜体、下划线
-                // 和删除线信息；可读性由后续柔和阴影提供，不再依赖半粗体。
+                fontSize = Math.Max(2f, fontSize * (GetEffectiveScalePercent() / 100f));
                 var style = FontStyle.Regular;
+                if (lf.lfWeight >= 700) style |= FontStyle.Bold;
                 if (lf.lfItalic != 0) style |= FontStyle.Italic;
                 if (lf.lfUnderline != 0) style |= FontStyle.Underline;
                 if (lf.lfStrikeOut != 0) style |= FontStyle.Strikeout;
@@ -300,7 +340,9 @@ namespace NoFences
             }
             catch
             {
-                return new Font("Segoe UI", 9f, FontStyle.Regular);
+                float fallbackSize = Math.Max(2f, 9f * (GetEffectiveScalePercent() / 100f));
+                string fallbackFamily = SystemFonts.IconTitleFont?.FontFamily?.Name ?? "Segoe UI";
+                return new Font(fallbackFamily, fallbackSize, FontStyle.Regular);
             }
         }
 
@@ -313,10 +355,7 @@ namespace NoFences
             titleFont?.Dispose();
             iconFont?.Dispose();
 
-            string familyName = currentTheme != null &&
-                !string.IsNullOrWhiteSpace(currentTheme.FontFamilyName)
-                    ? currentTheme.FontFamilyName
-                    : "Segoe UI";
+            string familyName = ResolveDesktopFontFamily(iconMetrics.lfFont.lfFaceName);
             float titleSize = Math.Max(8f, (float)Math.Floor(logicalTitleHeight / 2.0));
             try
             {
@@ -332,10 +371,12 @@ namespace NoFences
         public FenceWindow(FenceInfo fenceInfo)
         {
             this.fenceInfo = fenceInfo ?? throw new ArgumentNullException(nameof(fenceInfo));
+            this.fenceInfo.ScalePercent = GetEffectiveScalePercent();
             currentTheme = ThemeManager.Instance.CurrentTheme;
 
             // 先初始化组件以创建窗口句柄（后续 DPI 相关操作需要 Handle）
             InitializeComponent();
+            InitializeScaleSubMenu();
             ApplyContextMenuLocalization();
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
 
@@ -390,6 +431,63 @@ namespace NoFences
             ThemeManager.Instance.ThemeChanged += ThemeManager_ThemeChanged;
             ApplyTheme(currentTheme);
             Minify(); // 初始应用最小化状态
+        }
+
+        /// <summary>初始化右键菜单“缩放比例”子菜单及其内嵌的自定义滑块卡片。</summary>
+        private void InitializeScaleSubMenu()
+        {
+            scaleMenuControl = new ScaleMenuControl
+            {
+                ScalePercent = GetEffectiveScalePercent()
+            };
+            scaleMenuControl.ScaleChanged += ScaleMenuControl_ScaleChanged;
+
+            var host = new ToolStripControlHost(scaleMenuControl)
+            {
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                AutoSize = false,
+                Size = scaleMenuControl.Size
+            };
+
+            var dropDown = new ToolStripDropDown
+            {
+                AutoSize = true,
+                Padding = Padding.Empty,
+                Margin = Padding.Empty
+            };
+            dropDown.Items.Add(host);
+            dropDown.Opening += (s, e) =>
+            {
+                scaleMenuControl.ScalePercent = GetEffectiveScalePercent();
+            };
+            scaleToolStripMenuItem.DropDown = dropDown;
+
+            appContextMenu.Closed += (s, e) =>
+            {
+                if (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition))
+                {
+                    Minify();
+                }
+            };
+        }
+
+        /// <summary>响应缩放比例卡片的实时预览或最终提交，更新图标与文本度量并持久化。</summary>
+        private void ScaleMenuControl_ScaleChanged(object sender, ScaleChangedEventArgs e)
+        {
+            fenceInfo.ScalePercent = ScaleMenuControl.ClampScale(e.ScalePercent);
+            if (e.IsPreview)
+            {
+                LoadAndApplyMetrics();
+                ReloadFonts();
+                Invalidate();
+            }
+            else
+            {
+                ApplyIconMetrics();
+                Refresh();
+                Save();
+            }
         }
 
         /// <summary>
@@ -564,6 +662,7 @@ namespace NoFences
             SetContextMenuIcon(deleteItemToolStripMenuItem, ThemedMenuIcon.Delete);
             SetContextMenuIcon(renameToolStripMenuItem, ThemedMenuIcon.Rename);
             SetContextMenuIcon(titleSizeToolStripMenuItem, ThemedMenuIcon.TitleHeight);
+            SetContextMenuIcon(scaleToolStripMenuItem, ThemedMenuIcon.Scale);
             SetContextMenuIcon(themeToolStripMenuItem, ThemedMenuIcon.Theme);
             SetContextMenuIcon(newFenceToolStripMenuItem, ThemedMenuIcon.NewFence);
             SetContextMenuIcon(exitToolStripMenuItem, ThemedMenuIcon.CloseFence);
@@ -589,6 +688,7 @@ namespace NoFences
             minifyToolStripMenuItem.Image = null;
             renameToolStripMenuItem.Image = null;
             titleSizeToolStripMenuItem.Image = null;
+            scaleToolStripMenuItem.Image = null;
             themeToolStripMenuItem.Image = null;
             darkModeToolStripMenuItem.Image = null;
             newFenceToolStripMenuItem.Image = null;
@@ -1005,6 +1105,7 @@ namespace NoFences
             minifyToolStripMenuItem.Text = ThemeText.Get("收起窗口", "Minify");
             renameToolStripMenuItem.Text = ThemeText.Get("重命名", "Rename");
             titleSizeToolStripMenuItem.Text = ThemeText.Get("标题尺寸...", "Title size...");
+            scaleToolStripMenuItem.Text = ThemeText.ScaleMenu;
             iconManagementToolStripMenuItem.Text = ThemeText.IconManagement;
             themeToolStripMenuItem.Text = ThemeText.ThemeMenu;
             darkModeToolStripMenuItem.Text = ThemeText.DarkMode;
@@ -1023,6 +1124,8 @@ namespace NoFences
             deleteItemToolStripMenuItem.Visible = hoveringItem != null;
             iconManagementToolStripMenuItem.Enabled = !isIconManagementMode;
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
+            if (scaleMenuControl != null)
+                scaleMenuControl.ScalePercent = GetEffectiveScalePercent();
             // 可见性和勾选状态会触发 ToolStrip 重新布局；在这些状态更新后应用
             // 主题，确保空白处右键弹出的整个菜单窗口都按当前主题重新绘制。
             ThemeUi.ApplyToContextMenu(appContextMenu, currentTheme);
@@ -1140,11 +1243,13 @@ namespace NoFences
 
         /// <summary>
         /// 将窗口收缩为仅标题栏（最小化状态）。
-        /// 仅在 CanMinify 启用且未最小化时生效。
+        /// 仅在 CanMinify 启用且未最小化时生效；右键菜单展开期间保持展开以方便预览缩放。
         /// </summary>
         private void Minify()
         {
-            if (!isIconManagementMode && minifyToolStripMenuItem.Checked && !isMinified)
+            bool menuOpen = (appContextMenu != null && appContextMenu.Visible) ||
+                (scaleToolStripMenuItem?.DropDown != null && scaleToolStripMenuItem.DropDown.Visible);
+            if (!isIconManagementMode && !menuOpen && minifyToolStripMenuItem.Checked && !isMinified)
             {
                 isMinified = true;
                 prevHeight = Height;
@@ -1233,12 +1338,15 @@ namespace NoFences
             using (var titleTextBrush = new SolidBrush(theme.TitleTextColor))
             using (var titleFormat = new StringFormat { Alignment = StringAlignment.Center })
             {
+                var previousOffsetMode = e.Graphics.PixelOffsetMode;
+                e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
                 e.Graphics.DrawString(
                     Text,
                     titleFont,
                     titleTextBrush,
-                    new PointF(Width / 2f, titleOffset),
+                    new PointF((float)Math.Round(Width / 2f), (float)titleOffset),
                     titleFormat);
+                e.Graphics.PixelOffsetMode = previousOffsetMode;
             }
 
             // 条目网格布局：从左到右、从上到下排列
@@ -1278,7 +1386,8 @@ namespace NoFences
                 if (isSelected)
                 {
                     // 用不限高度测量文字真实高度，超过标准 2 行高度才需展开
-                    var testMaxSize = new SizeF(itemWidth - 12, 9999);
+                    int textInset = Math.Min(6, Math.Max(1, itemWidth / 6));
+                    var testMaxSize = new SizeF(Math.Max(4, itemWidth - textInset * 2), 9999);
                     var testSize = e.Graphics.MeasureString(
                         entry.Name,
                         iconFont,
@@ -1325,8 +1434,9 @@ namespace NoFences
             if (expandEntryName != null)
             {
                 var expandTextPadding = itemPadding / 3;
-                var expandTextPos = new PointF(expandEntryX + 6, expandEntryY + iconSize + expandTextPadding);
-                var expandMaxSize = new SizeF(itemWidth - 12, 9999); // 不限制行数
+                int textInset = Math.Min(6, Math.Max(1, itemWidth / 6));
+                var expandTextPos = new PointF(expandEntryX + textInset, expandEntryY + iconSize + expandTextPadding);
+                var expandMaxSize = new SizeF(Math.Max(4, itemWidth - textInset * 2), 9999); // 不限制行数
                 var expandTextSize = e.Graphics.MeasureString(
                     expandEntryName,
                     iconFont,
@@ -1452,9 +1562,10 @@ namespace NoFences
             var name = entry.Name;
 
             var textPadding = itemPadding / 3;
-            // 按 Windows 桌面规则：文本左右各留 6px 安全距离
-            var textPosition = new PointF(x + 6, y + iconSize + textPadding);
-            var textMaxSize = new SizeF(itemWidth - 12, textHeight);
+            // 按 Windows 桌面规则：文本左右各留 6px 安全距离（极小缩放比例下按比例收缩）
+            int textInset = Math.Min(6, Math.Max(1, itemWidth / 6));
+            var textPosition = new PointF(x + textInset, y + iconSize + textPadding);
+            var textMaxSize = new SizeF(Math.Max(4, itemWidth - textInset * 2), textHeight);
 
             // 按 Windows 桌面规则始终允许自动换行，居中、末尾省略号截断
             var textSize = g.MeasureString(
@@ -1621,22 +1732,40 @@ namespace NoFences
             bool selected,
             bool hovered)
         {
-            if (theme.MenuStyle == ThemeMenuStyle.WindowsXp && selected)
-            {
-                DrawXpSelectedLabel(graphics, text, bounds);
-                return;
-            }
+            var snappedBounds = new RectangleF(
+                (float)Math.Round(bounds.X),
+                (float)Math.Round(bounds.Y),
+                (float)Math.Ceiling(bounds.Width),
+                (float)Math.Ceiling(bounds.Height));
 
-            if (theme.MenuStyle != ThemeMenuStyle.WindowsXp &&
-                SystemInformation.HighContrast &&
-                (selected || hovered))
+            var previousOffsetMode = graphics.PixelOffsetMode;
+            var previousTextHint = graphics.TextRenderingHint;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            try
             {
-                using (var textBrush = new SolidBrush(SystemColors.HighlightText))
-                    graphics.DrawString(text, iconFont, textBrush, bounds, format);
-                return;
-            }
+                if (theme.MenuStyle == ThemeMenuStyle.WindowsXp && selected)
+                {
+                    DrawXpSelectedLabel(graphics, text, snappedBounds);
+                    return;
+                }
 
-            DrawDesktopStyleIconText(graphics, text, bounds, format, theme);
+                if (theme.MenuStyle != ThemeMenuStyle.WindowsXp &&
+                    SystemInformation.HighContrast &&
+                    (selected || hovered))
+                {
+                    using (var textBrush = new SolidBrush(SystemColors.HighlightText))
+                        graphics.DrawString(text, iconFont, textBrush, snappedBounds, format);
+                    return;
+                }
+
+                DrawDesktopStyleIconText(graphics, text, snappedBounds, format, theme);
+            }
+            finally
+            {
+                graphics.PixelOffsetMode = previousOffsetMode;
+                graphics.TextRenderingHint = previousTextHint;
+            }
         }
 
         /// <summary>
@@ -1683,10 +1812,10 @@ namespace NoFences
                     float backgroundWidth = Math.Min(
                         bounds.Width,
                         (float)Math.Ceiling(lineWidth) + horizontalPadding * 2f);
-                    float lineY = bounds.Y + index * lineHeight;
+                    float lineY = (float)Math.Round(bounds.Y + index * lineHeight);
                     graphics.FillRectangle(
                         background,
-                        bounds.X + (bounds.Width - backgroundWidth) / 2f,
+                        (float)Math.Round(bounds.X + (bounds.Width - backgroundWidth) / 2f),
                         lineY,
                         backgroundWidth,
                         (float)Math.Ceiling(lineHeight));
@@ -1782,8 +1911,8 @@ namespace NoFences
         }
 
         /// <summary>
-        /// 以 DPI 自适应的多点采样绘制图标文字。阴影围绕右下偏移中心分布，
-        /// 多层低透明度样本叠加成柔和模糊边缘，避免清晰重影或生硬描边。
+        /// 以整像素对齐和一致的网格拟合提示（AntiAliasGridFit）绘制桌面图标文字与右下投影，
+        /// 避免半像素偏移、环形弥散阴影或阴影/正文渲染模式不一致导致中文字形发虚重影。
         /// </summary>
         private void DrawDesktopStyleIconText(
             Graphics graphics,
@@ -1795,49 +1924,40 @@ namespace NoFences
             float dpiScale = IsHandleCreated
                 ? Math.Max(1f, GetDpiForWindow(Handle) / 96f)
                 : 1f;
-            float dropOffset = 1.1f * dpiScale;
-            float blurRadius = 1.35f * dpiScale;
-            float diagonalRadius = blurRadius * 0.72f;
-            float innerRadius = blurRadius * 0.48f;
+            float primaryOffset = Math.Max(1f, (float)Math.Round(1f * dpiScale));
+            bool isLightText = !ThemeDrawing.IsDark(theme.ItemTextColor);
 
-            var shadowState = graphics.Save();
-            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-            using (var outerShadowBrush = new SolidBrush(
-                ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 20)))
-            using (var innerShadowBrush = new SolidBrush(
-                ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 30)))
-            using (var centerShadowBrush = new SolidBrush(
-                ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 65)))
+            if (isLightText)
             {
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset - blurRadius, dropOffset);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset + blurRadius, dropOffset);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset, dropOffset - blurRadius);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset, dropOffset + blurRadius);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset - diagonalRadius, dropOffset - diagonalRadius);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset + diagonalRadius, dropOffset - diagonalRadius);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset - diagonalRadius, dropOffset + diagonalRadius);
-                DrawTextShadowSample(graphics, text, outerShadowBrush, bounds, format,
-                    dropOffset + diagonalRadius, dropOffset + diagonalRadius);
+                using (var softShadowBrush = new SolidBrush(
+                    ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 48)))
+                using (var mainShadowBrush = new SolidBrush(
+                    ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 150)))
+                {
+                    DrawTextShadowSample(graphics, text, softShadowBrush, bounds, format,
+                        primaryOffset, 0f);
+                    DrawTextShadowSample(graphics, text, softShadowBrush, bounds, format,
+                        0f, primaryOffset);
+                    DrawTextShadowSample(graphics, text, mainShadowBrush, bounds, format,
+                        primaryOffset, primaryOffset);
 
-                DrawTextShadowSample(graphics, text, innerShadowBrush, bounds, format,
-                    dropOffset - innerRadius, dropOffset);
-                DrawTextShadowSample(graphics, text, innerShadowBrush, bounds, format,
-                    dropOffset + innerRadius, dropOffset);
-                DrawTextShadowSample(graphics, text, innerShadowBrush, bounds, format,
-                    dropOffset, dropOffset - innerRadius);
-                DrawTextShadowSample(graphics, text, innerShadowBrush, bounds, format,
-                    dropOffset, dropOffset + innerRadius);
-                DrawTextShadowSample(graphics, text, centerShadowBrush, bounds, format,
-                    dropOffset, dropOffset);
+                    if (dpiScale >= 1.25f)
+                    {
+                        float secondaryOffset = primaryOffset + 1f;
+                        DrawTextShadowSample(graphics, text, softShadowBrush, bounds, format,
+                            secondaryOffset, secondaryOffset);
+                    }
+                }
             }
-            graphics.Restore(shadowState);
+            else
+            {
+                using (var subtleHighlightBrush = new SolidBrush(
+                    ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 72)))
+                {
+                    DrawTextShadowSample(graphics, text, subtleHighlightBrush, bounds, format,
+                        primaryOffset, primaryOffset);
+                }
+            }
 
             using (var textBrush = new SolidBrush(theme.ItemTextColor))
                 graphics.DrawString(text, iconFont, textBrush, bounds, format);
@@ -2086,13 +2206,23 @@ namespace NoFences
 
         /// <summary>
         /// 使用带 Alpha 通道的位图和高质量双三次插值绘制图标，
-        /// 避免 DrawIcon 放大低分辨率图标时产生明显锯齿。
+        /// 避免 DrawIcon 缩放图标时退化为邻近取样产生锯齿或模糊。
         /// </summary>
         private static void DrawIconHighQuality(Graphics graphics, Icon icon, Rectangle targetRectangle)
         {
-            if (icon == null)
+            if (icon == null || targetRectangle.Width <= 0 || targetRectangle.Height <= 0)
                 return;
-            graphics.DrawIcon(icon, targetRectangle);
+
+            if (icon.Width == targetRectangle.Width && icon.Height == targetRectangle.Height)
+            {
+                graphics.DrawIcon(icon, targetRectangle);
+                return;
+            }
+
+            using (var bitmap = icon.ToBitmap())
+            {
+                graphics.DrawImage(bitmap, targetRectangle);
+            }
         }
 
         /// <summary>按当前桌面风格绘制原色图标或 XP 经典选中染色图标。</summary>
@@ -2227,6 +2357,12 @@ namespace NoFences
             backgroundImagePath = null;
             backgroundImageVersion = 0;
             ClearContextMenuIcons();
+            if (scaleMenuControl != null)
+            {
+                scaleMenuControl.ScaleChanged -= ScaleMenuControl_ScaleChanged;
+                scaleMenuControl.Dispose();
+                scaleMenuControl = null;
+            }
             titleFont?.Dispose();
             titleFont = null;
             iconFont?.Dispose();

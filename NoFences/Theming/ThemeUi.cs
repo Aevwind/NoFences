@@ -38,7 +38,10 @@ namespace NoFences.Theming
             ApplyToChildren(form.Controls, theme);
 
             if (form.IsHandleCreated)
-                WindowUtil.TrySetImmersiveDarkMode(form.Handle, darkModeEnabled);
+            {
+                bool useDarkTitleBar = darkModeEnabled || ThemeDrawing.IsDark(theme.DialogBackgroundColor);
+                WindowUtil.TrySetImmersiveDarkMode(form.Handle, useDarkTitleBar);
+            }
             form.Invalidate(true);
         }
 
@@ -58,7 +61,7 @@ namespace NoFences.Theming
             foreach (Control control in controls)
             {
                 ApplyToControl(control, theme);
-                if (control.HasChildren)
+                if (control.HasChildren && !(control is ThemedTextBox) && !(control is ThemedNumericUpDown))
                     ApplyToChildren(control.Controls, theme);
             }
         }
@@ -67,6 +70,12 @@ namespace NoFences.Theming
         {
             control.ForeColor = theme.DialogTextColor;
             control.Font = GetThemeFont(theme.FontFamilyName, control.Font.Size, control.Font.Style);
+
+            if (control is IThemedControl themedControl)
+            {
+                themedControl.ApplyTheme(theme);
+                return;
+            }
 
             if (control is TextBoxBase)
             {
@@ -141,6 +150,9 @@ namespace NoFences.Theming
         {
             MenuThemeProfile profile = renderer.Profile;
             bool isDropDown = strip is ToolStripDropDown;
+            bool isHostedCardDropDown = isDropDown &&
+                strip.Items.Count == 1 &&
+                strip.Items[0] is ToolStripControlHost;
             Padding menuPadding = ScalePadding(strip, profile.MenuPadding);
             Padding itemPadding = ScalePadding(strip, profile.ItemPadding);
             int minimumWidth = ScaleLogical(strip, profile.MinimumWidth);
@@ -166,8 +178,12 @@ namespace NoFences.Theming
                 if (isDropDown)
                 {
                     strip.AutoSize = true;
-                    strip.MinimumSize = new Size(minimumWidth, 0);
-                    strip.Padding = menuPadding;
+                    strip.MinimumSize = isHostedCardDropDown
+                        ? Size.Empty
+                        : new Size(minimumWidth, 0);
+                    strip.Padding = isHostedCardDropDown
+                        ? Padding.Empty
+                        : menuPadding;
 
                     var dropDown = (ToolStripDropDown)strip;
                     dropDown.DropShadowEnabled = profile.DropShadowEnabled;
@@ -181,7 +197,7 @@ namespace NoFences.Theming
                     var dropDownMenu = strip as ToolStripDropDownMenu;
                     if (dropDownMenu != null)
                     {
-                        dropDownMenu.ShowImageMargin = true;
+                        dropDownMenu.ShowImageMargin = !isHostedCardDropDown;
                         dropDownMenu.ShowCheckMargin = false;
                     }
                 }
@@ -203,7 +219,7 @@ namespace NoFences.Theming
             }
 
             strip.PerformLayout();
-            if (isDropDown)
+            if (isDropDown && !isHostedCardDropDown)
                 EqualizeDropDownHorizontalMargins(strip);
             strip.Invalidate();
         }
@@ -252,6 +268,26 @@ namespace NoFences.Theming
                     profile.FontSize,
                     item.Font.Style,
                     theme.FontFamilyName);
+
+                var controlHost = item as ToolStripControlHost;
+                if (controlHost != null)
+                {
+                    controlHost.Margin = Padding.Empty;
+                    controlHost.Padding = Padding.Empty;
+                    if (controlHost.Control != null)
+                    {
+                        controlHost.Control.Font = item.Font;
+                        var scaleControl = controlHost.Control as ScaleMenuControl;
+                        if (scaleControl != null)
+                        {
+                            int targetDpi = owner.DeviceDpi > 0 ? owner.DeviceDpi : 96;
+                            scaleControl.ApplyTheme(theme, profile, targetDpi);
+                            controlHost.AutoSize = false;
+                            controlHost.Size = scaleControl.Size;
+                        }
+                    }
+                    continue;
+                }
 
                 if (applyDropDownMetrics)
                 {

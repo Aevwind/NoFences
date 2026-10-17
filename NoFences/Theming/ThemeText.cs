@@ -28,6 +28,10 @@ namespace NoFences.Theming
 
         public static string ThemeMenu => Get("主题风格...", "Theme...");
 
+        public static string ScaleMenu => Get("缩放比例", "Scale");
+
+        public static string Reset => Get("重置", "Reset");
+
         public static string DarkMode => Get("黑暗模式", "Dark mode");
 
         public static string DefaultTheme => Get("默认", "Default");

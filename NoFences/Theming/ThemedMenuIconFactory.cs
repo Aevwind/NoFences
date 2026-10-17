@@ -16,6 +16,7 @@ namespace NoFences.Theming
         Minify,
         Rename,
         TitleHeight,
+        Scale,
         Theme,
         DarkMode,
         NewFence,
@@ -135,6 +136,9 @@ namespace NoFences.Theming
                     break;
                 case ThemedMenuIcon.TitleHeight:
                     DrawTitleHeightIcon(graphics, outline);
+                    break;
+                case ThemedMenuIcon.Scale:
+                    DrawScaleIcon(graphics, outline);
                     break;
                 case ThemedMenuIcon.Theme:
                     DrawThemeIcon(graphics, outline, theme.MenuBackgroundColor);
@@ -321,6 +325,39 @@ namespace NoFences.Theming
                 graphics.FillPolygon(arrow, down);
                 graphics.DrawPolygon(border, up);
                 graphics.DrawPolygon(border, down);
+            }
+        }
+
+        /// <summary>绘制缩放比例图标：渐变圆角视口与对角双向缩放箭头。</summary>
+        private static void DrawScaleIcon(Graphics graphics, Color outline)
+        {
+            FillGradientRoundedRectangle(
+                graphics,
+                new RectangleF(1.4f, 1.4f, 13.2f, 13.2f),
+                2.6f,
+                Blue,
+                Cyan,
+                outline,
+                45f);
+
+            FillGradientRoundedRectangle(
+                graphics,
+                new RectangleF(2.8f, 8.2f, 5f, 5f),
+                1.1f,
+                Purple,
+                Pink,
+                outline,
+                45f);
+
+            using (var shaft = CreateRoundedPen(Color.White, 1.45f))
+            {
+                graphics.DrawLine(shaft, 5.2f, 10.8f, 12.1f, 3.9f);
+                graphics.DrawLines(shaft, new[]
+                {
+                    new PointF(8.8f, 3.7f),
+                    new PointF(12.3f, 3.7f),
+                    new PointF(12.3f, 7.2f)
+                });
             }
         }
 
@@ -576,6 +613,18 @@ namespace NoFences.Theming
                             graphics.DrawLine(blue, 8, 4, 11, 7);
                             graphics.DrawLine(blue, 8, 12, 5, 9);
                             graphics.DrawLine(blue, 8, 12, 11, 9);
+                        }
+                        break;
+                    case ThemedMenuIcon.Scale:
+                        using (var fill = new SolidBrush(Color.FromArgb(115, 169, 235)))
+                        using (var blue = new Pen(Color.FromArgb(49, 106, 197), 2f))
+                        {
+                            graphics.DrawRectangle(outline, 2, 2, 12, 12);
+                            graphics.FillRectangle(fill, 3, 9, 5, 4);
+                            graphics.DrawRectangle(outline, 3, 9, 5, 4);
+                            graphics.DrawLine(blue, 7, 9, 12, 4);
+                            graphics.DrawLine(blue, 9, 4, 12, 4);
+                            graphics.DrawLine(blue, 12, 4, 12, 7);
                         }
                         break;
                     case ThemedMenuIcon.Theme:

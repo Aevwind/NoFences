@@ -101,20 +101,20 @@ namespace NoFences.Theming
                 ItemTextShadowColorArgb = Color.FromArgb(15, 15, 15).ToArgb(),
                 ItemHoverColorArgb = SystemColors.ActiveCaption.ToArgb(),
                 ItemSelectedColorArgb = SystemColors.GradientInactiveCaption.ToArgb(),
-                BorderColorArgb = SystemColors.ActiveBorder.ToArgb(),
+                BorderColorArgb = Color.FromArgb(165, 165, 170).ToArgb(),
                 ScrollBarColorArgb = Color.Black.ToArgb(),
 
-                // 右键菜单和设置页同样使用经典深色表面，避免栅栏切换到
-                // 半透明主题后仍弹出与主题无关的系统灰白色菜单。
+                // 栅栏与右键菜单保持经典深色半透明表面；设置页在默认（浅色）模式下
+                // 使用清爽浅色表面，在开启黑暗模式时切换为深色表面。
                 MenuBackgroundColorArgb = Color.FromArgb(45, 45, 48).ToArgb(),
                 MenuTextColorArgb = Color.White.ToArgb(),
                 MenuHighlightColorArgb = Color.FromArgb(61, 111, 158).ToArgb(),
                 MenuHighlightTextColorArgb = Color.White.ToArgb(),
-                DialogBackgroundColorArgb = Color.FromArgb(45, 45, 48).ToArgb(),
-                DialogTextColorArgb = Color.White.ToArgb(),
-                ControlBackgroundColorArgb = Color.FromArgb(63, 63, 70).ToArgb(),
-                ControlTextColorArgb = Color.White.ToArgb(),
-                AccentColorArgb = Color.FromArgb(96, 205, 255).ToArgb(),
+                DialogBackgroundColorArgb = Color.FromArgb(243, 243, 243).ToArgb(),
+                DialogTextColorArgb = Color.FromArgb(26, 26, 26).ToArgb(),
+                ControlBackgroundColorArgb = Color.White.ToArgb(),
+                ControlTextColorArgb = Color.FromArgb(26, 26, 26).ToArgb(),
+                AccentColorArgb = Color.FromArgb(0, 103, 192).ToArgb(),
                 MenuStyle = ThemeMenuStyle.Standard,
 
                 CornerRadius = 12,
@@ -125,12 +125,16 @@ namespace NoFences.Theming
 
             if (colorMode == ThemeColorMode.Dark)
             {
-                // 黑暗模式是单独开关：只把辅助界面进一步压暗，不能改变
+                // 黑暗模式是单独开关：把菜单与设置页切换为深色表面，同时保留
                 // 默认主题作为“经典半透明栅栏”的风格身份和透明参数。
+                theme.BorderColorArgb = Color.FromArgb(100, 100, 106).ToArgb();
                 theme.MenuBackgroundColorArgb = Color.FromArgb(32, 32, 32).ToArgb();
                 theme.MenuHighlightColorArgb = Color.FromArgb(61, 61, 61).ToArgb();
                 theme.DialogBackgroundColorArgb = Color.FromArgb(32, 32, 32).ToArgb();
+                theme.DialogTextColorArgb = Color.White.ToArgb();
                 theme.ControlBackgroundColorArgb = Color.FromArgb(45, 45, 48).ToArgb();
+                theme.ControlTextColorArgb = Color.White.ToArgb();
+                theme.AccentColorArgb = Color.FromArgb(96, 205, 255).ToArgb();
             }
 
             return theme;

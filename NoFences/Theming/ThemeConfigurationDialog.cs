@@ -14,25 +14,25 @@ namespace NoFences.Theming
     /// </summary>
     public sealed class ThemeConfigurationDialog : Form
     {
-        private readonly ComboBox themeComboBox = new ComboBox();
-        private readonly CheckBox darkModeCheckBox = new CheckBox();
-        private readonly Button copyToCustomButton = new Button();
-        private readonly Button resetCustomButton = new Button();
-        private readonly Button applyButton = new Button();
-        private readonly Button okButton = new Button();
-        private readonly Button cancelButton = new Button();
+        private readonly ThemedComboBox themeComboBox = new ThemedComboBox();
+        private readonly ThemedCheckBox darkModeCheckBox = new ThemedCheckBox();
+        private readonly ThemedButton copyToCustomButton = new ThemedButton();
+        private readonly ThemedButton resetCustomButton = new ThemedButton();
+        private readonly ThemedButton applyButton = new ThemedButton();
+        private readonly ThemedButton okButton = new ThemedButton();
+        private readonly ThemedButton cancelButton = new ThemedButton();
         private readonly ThemePreviewControl previewControl = new ThemePreviewControl();
-        private readonly NumericUpDown cornerRadiusInput = new NumericUpDown();
-        private readonly NumericUpDown panelOpacityInput = new NumericUpDown();
-        private readonly NumericUpDown titleOpacityInput = new NumericUpDown();
-        private readonly NumericUpDown imageOpacityInput = new NumericUpDown();
-        private readonly CheckBox blurCheckBox = new CheckBox();
-        private readonly TextBox fontFamilyTextBox = new TextBox();
-        private readonly TextBox imagePathTextBox = new TextBox();
-        private readonly ComboBox imageLayoutComboBox = new ComboBox();
-        private readonly ComboBox menuStyleComboBox = new ComboBox();
-        private readonly Button browseImageButton = new Button();
-        private readonly Button clearImageButton = new Button();
+        private readonly ThemedNumericUpDown cornerRadiusInput = new ThemedNumericUpDown();
+        private readonly ThemedNumericUpDown panelOpacityInput = new ThemedNumericUpDown();
+        private readonly ThemedNumericUpDown titleOpacityInput = new ThemedNumericUpDown();
+        private readonly ThemedNumericUpDown imageOpacityInput = new ThemedNumericUpDown();
+        private readonly ThemedCheckBox blurCheckBox = new ThemedCheckBox();
+        private readonly ThemedTextBox fontFamilyTextBox = new ThemedTextBox();
+        private readonly ThemedTextBox imagePathTextBox = new ThemedTextBox();
+        private readonly ThemedComboBox imageLayoutComboBox = new ThemedComboBox();
+        private readonly ThemedComboBox menuStyleComboBox = new ThemedComboBox();
+        private readonly ThemedButton browseImageButton = new ThemedButton();
+        private readonly ThemedButton clearImageButton = new ThemedButton();
         private readonly Label customHintLabel = new Label();
         private readonly List<Control> customOnlyControls = new List<Control>();
         private readonly List<ColorEditor> colorEditors = new List<ColorEditor>();
@@ -127,7 +127,6 @@ namespace NoFences.Theming
             };
             header.Controls.Add(label, 0, 0);
 
-            themeComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
             themeComboBox.Dock = DockStyle.Fill;
             themeComboBox.Margin = new Padding(0, 2, 8, 2);
             themeComboBox.SelectedIndexChanged += ThemeComboBox_SelectedIndexChanged;
@@ -153,25 +152,22 @@ namespace NoFences.Theming
 
         private Control BuildEditorTabs()
         {
-            var tabs = new TabControl { Dock = DockStyle.Fill };
-            var appearancePage = new TabPage(T("外观", "Appearance"));
-            var colorPage = new TabPage(T("颜色", "Colors"));
-            var imagePage = new TabPage(T("背景图片", "Background image"));
-            tabs.TabPages.Add(appearancePage);
-            tabs.TabPages.Add(colorPage);
-            tabs.TabPages.Add(imagePage);
-
-            appearancePage.Controls.Add(BuildAppearanceEditor());
-            colorPage.Controls.Add(BuildColorEditor());
-            imagePage.Controls.Add(BuildImageEditor());
+            var tabs = new ThemedTabControl { Dock = DockStyle.Fill };
+            tabs.AddPage(T("外观", "Appearance"), BuildAppearanceEditor());
+            tabs.AddPage(T("颜色", "Colors"), BuildColorEditor());
+            tabs.AddPage(T("背景图片", "Background image"), BuildImageEditor());
             return tabs;
         }
 
         private Control BuildAppearanceEditor()
         {
             var layout = CreateTwoColumnEditor();
+            fontFamilyTextBox.Width = 220;
+            fontFamilyTextBox.Anchor = AnchorStyles.Left;
             AddEditorRow(layout, T("字体名称", "Font family"), fontFamilyTextBox);
-            menuStyleComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+
+            menuStyleComboBox.Width = 220;
+            menuStyleComboBox.Anchor = AnchorStyles.Left;
             menuStyleComboBox.Items.Add(new MenuStyleChoice(
                 ThemeMenuStyle.Standard,
                 T("标准 / 经典半透明", "Standard / classic translucent")));
@@ -269,13 +265,15 @@ namespace NoFences.Theming
             clearImageButton.Text = T("清除", "Clear");
             browseImageButton.AutoSize = true;
             clearImageButton.AutoSize = true;
+            browseImageButton.Margin = new Padding(6, 0, 0, 0);
+            clearImageButton.Margin = new Padding(6, 0, 0, 0);
             pathPanel.Controls.Add(imagePathTextBox, 0, 0);
             pathPanel.Controls.Add(browseImageButton, 1, 0);
             pathPanel.Controls.Add(clearImageButton, 2, 0);
             AddEditorRow(layout, T("图片文件", "Image file"), pathPanel);
 
-            imageLayoutComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            imageLayoutComboBox.Dock = DockStyle.Fill;
+            imageLayoutComboBox.Width = 220;
+            imageLayoutComboBox.Anchor = AnchorStyles.Left;
             imageLayoutChoices.Add(new ImageLayoutChoice(ThemeImageLayout.Fill, T("填充（裁剪）", "Fill (crop)")));
             imageLayoutChoices.Add(new ImageLayoutChoice(ThemeImageLayout.Fit, T("适应（完整）", "Fit (contain)")));
             imageLayoutChoices.Add(new ImageLayoutChoice(ThemeImageLayout.Stretch, T("拉伸", "Stretch")));
@@ -321,14 +319,18 @@ namespace NoFences.Theming
             cancelButton.Text = T("取消", "Cancel");
             cancelButton.DialogResult = DialogResult.Cancel;
             cancelButton.AutoSize = true;
+            cancelButton.Margin = new Padding(6, 0, 0, 0);
             okButton.Text = T("确定", "OK");
             okButton.AutoSize = true;
+            okButton.Margin = new Padding(6, 0, 0, 0);
             okButton.Click += OkButton_Click;
             applyButton.Text = T("应用", "Apply");
             applyButton.AutoSize = true;
+            applyButton.Margin = new Padding(6, 0, 0, 0);
             applyButton.Click += ApplyButton_Click;
             resetCustomButton.Text = T("恢复自定义默认值", "Reset custom defaults");
             resetCustomButton.AutoSize = true;
+            resetCustomButton.Margin = new Padding(0, 0, 0, 0);
             resetCustomButton.Click += ResetCustomButton_Click;
 
             actions.Controls.Add(cancelButton);
@@ -360,17 +362,13 @@ namespace NoFences.Theming
             return scrollPanel;
         }
 
-        private NumericUpDown ConfigureNumber(NumericUpDown input, int minimum, int maximum, string suffix)
+        private ThemedNumericUpDown ConfigureNumber(ThemedNumericUpDown input, int minimum, int maximum, string suffix)
         {
             input.Minimum = minimum;
             input.Maximum = maximum;
-            input.DecimalPlaces = 0;
-            input.Increment = 1;
-            input.Width = 140;
+            input.Width = 220;
             input.Anchor = AnchorStyles.Left;
-            input.TextAlign = HorizontalAlignment.Right;
-            // NumericUpDown has no native suffix. A concise accessible name keeps
-            // units understandable without owner-drawing the edit control.
+            input.Suffix = suffix;
             input.AccessibleDescription = suffix;
             return input;
         }
@@ -408,7 +406,7 @@ namespace NoFences.Theming
         {
             var editor = new ColorEditor(label, getter, setter);
             editor.Button.Width = 180;
-            editor.Button.Height = 28;
+            editor.Button.Height = 30;
             editor.Button.Tag = editor;
             editor.Button.Click += ColorButton_Click;
             colorEditors.Add(editor);
@@ -419,6 +417,22 @@ namespace NoFences.Theming
         private void AddCustomControls(params Control[] controls)
         {
             customOnlyControls.AddRange(controls);
+        }
+
+        private static void SetControlInteractive(Control control, bool interactive)
+        {
+            if (control is ThemedTextBox textBox)
+                textBox.IsInteractive = interactive;
+            else if (control is ThemedNumericUpDown numberBox)
+                numberBox.IsInteractive = interactive;
+            else if (control is ThemedComboBox comboBox)
+                comboBox.IsInteractive = interactive;
+            else if (control is ThemedCheckBox checkBox)
+                checkBox.IsInteractive = interactive;
+            else if (control is ThemedButton button)
+                button.IsInteractive = interactive;
+            else
+                control.Enabled = interactive;
         }
 
         private void PopulateThemeChoices()
@@ -477,9 +491,9 @@ namespace NoFences.Theming
             }
 
             foreach (var control in customOnlyControls)
-                control.Enabled = isCustom;
-            resetCustomButton.Enabled = isCustom;
-            copyToCustomButton.Enabled = !isCustom;
+                SetControlInteractive(control, isCustom);
+            resetCustomButton.IsInteractive = isCustom;
+            copyToCustomButton.IsInteractive = !isCustom;
             customHintLabel.Visible = !isCustom;
             ApplyPreviewTheme(theme, colorMode == ThemeColorMode.Dark);
         }
@@ -568,10 +582,12 @@ namespace NoFences.Theming
         private void UpdateColorButton(ColorEditor editor, ThemeDefinition theme)
         {
             Color color = Color.FromArgb(editor.Getter(theme));
+            editor.Button.IsColorSwatch = true;
             editor.Button.UseVisualStyleBackColor = false;
             editor.Button.BackColor = color;
             editor.Button.ForeColor = ThemeDrawing.IsDark(color) ? Color.White : Color.Black;
             editor.Button.Text = string.Format("#{0:X2}{1:X2}{2:X2}", color.R, color.G, color.B);
+            editor.Button.Invalidate();
         }
 
         private void ThemeComboBox_SelectedIndexChanged(object sender, EventArgs e)
@@ -760,13 +776,13 @@ namespace NoFences.Theming
                 DisplayName = displayName;
                 Getter = getter;
                 Setter = setter;
-                Button = new Button();
+                Button = new ThemedButton { IsColorSwatch = true };
             }
 
             public string DisplayName { get; }
             public Func<ThemeDefinition, int> Getter { get; }
             public Action<ThemeDefinition, int> Setter { get; }
-            public Button Button { get; }
+            public ThemedButton Button { get; }
         }
     }
 
@@ -815,10 +831,24 @@ namespace NoFences.Theming
         {
             base.OnPaint(e);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+            // 绘制模拟桌面壁纸底板，使半透明深/浅色栅栏在浅色与黑暗设置页下均呈现真实观感
+            var canvasRect = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+            using (var canvasPath = ThemeDrawing.CreateRoundedRectangle(canvasRect, 10))
+            using (var canvasBrush = new LinearGradientBrush(
+                canvasRect,
+                Color.FromArgb(44, 78, 126),
+                Color.FromArgb(24, 42, 74),
+                LinearGradientMode.ForwardDiagonal))
+            using (var canvasBorder = new Pen(ThemeDrawing.WithAlpha(theme.BorderColor, 90), 1f))
+            {
+                e.Graphics.FillPath(canvasBrush, canvasPath);
+                e.Graphics.DrawPath(canvasBorder, canvasPath);
+            }
 
             int menuWidth = Math.Min(190, Width / 3);
-            var fenceBounds = new Rectangle(8, 8, Math.Max(220, Width - menuWidth - 28), Height - 16);
+            var fenceBounds = new Rectangle(12, 12, Math.Max(220, Width - menuWidth - 34), Height - 24);
             var menuBounds = new Rectangle(fenceBounds.Right + 10, 24, menuWidth, Math.Min(132, Height - 32));
             DrawFence(e.Graphics, fenceBounds);
             DrawMenu(e.Graphics, menuBounds);
@@ -942,17 +972,10 @@ namespace NoFences.Theming
         /// <summary>为主题预览创建与真实图标标签相同的常规字重字体。</summary>
         private Font CreatePreviewIconFont(float size)
         {
-            try
-            {
-                return new Font(theme.FontFamilyName, size, FontStyle.Regular);
-            }
-            catch
-            {
-                return CreateThemeFont(size, FontStyle.Regular);
-            }
+            return CreateThemeFont(size, FontStyle.Regular);
         }
 
-        /// <summary>使用多点低透明度采样模拟主题预览中的柔和文字阴影。</summary>
+        /// <summary>使用整像素右下偏移投影绘制预览文字阴影，保持与真实桌面栅栏一致的锐利度。</summary>
         private void DrawPreviewTextShadow(
             Graphics graphics,
             string text,
@@ -960,43 +983,18 @@ namespace NoFences.Theming
             RectangleF bounds,
             StringFormat format)
         {
-            PointF[] offsets =
+            bool isLightText = !ThemeDrawing.IsDark(theme.ItemTextColor);
+            int alpha = isLightText ? 140 : 68;
+            using (var shadowBrush = new SolidBrush(
+                ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, alpha)))
             {
-                new PointF(-0.2f, 1.1f),
-                new PointF(2.4f, 1.1f),
-                new PointF(1.1f, -0.2f),
-                new PointF(1.1f, 2.4f),
-                new PointF(0.15f, 0.15f),
-                new PointF(2.05f, 0.15f),
-                new PointF(0.15f, 2.05f),
-                new PointF(2.05f, 2.05f)
-            };
-            using (var outer = new SolidBrush(
-                ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 22)))
-            using (var center = new SolidBrush(
-                ThemeDrawing.WithAlpha(theme.ItemTextShadowColor, 72)))
-            {
-                foreach (PointF offset in offsets)
-                {
-                    graphics.DrawString(
-                        text,
-                        font,
-                        outer,
-                        new RectangleF(
-                            bounds.X + offset.X,
-                            bounds.Y + offset.Y,
-                            bounds.Width,
-                            bounds.Height),
-                        format);
-                }
-
                 graphics.DrawString(
                     text,
                     font,
-                    center,
+                    shadowBrush,
                     new RectangleF(
-                        bounds.X + 1.1f,
-                        bounds.Y + 1.1f,
+                        bounds.X + 1f,
+                        bounds.Y + 1f,
                         bounds.Width,
                         bounds.Height),
                     format);

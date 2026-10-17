@@ -1,4 +1,4 @@
-﻿namespace NoFences
+namespace NoFences
 {
     partial class FenceWindow
     {
@@ -37,6 +37,7 @@
             this.minifyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.renameToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.titleSizeToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.scaleToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.themeToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.darkModeToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.toolStripSeparator1 = new System.Windows.Forms.ToolStripSeparator();
@@ -57,6 +58,7 @@
             this.minifyToolStripMenuItem,
             this.renameToolStripMenuItem,
             this.titleSizeToolStripMenuItem,
+            this.scaleToolStripMenuItem,
             this.themeToolStripMenuItem,
             this.darkModeToolStripMenuItem,
             this.toolStripSeparator1,
@@ -105,6 +107,11 @@
             resources.ApplyResources(this.titleSizeToolStripMenuItem, "titleSizeToolStripMenuItem");
             this.titleSizeToolStripMenuItem.Name = "titleSizeToolStripMenuItem";
             this.titleSizeToolStripMenuItem.Click += new System.EventHandler(this.titleSizeToolStripMenuItem_Click);
+            //
+            // scaleToolStripMenuItem
+            //
+            this.scaleToolStripMenuItem.Name = "scaleToolStripMenuItem";
+            this.scaleToolStripMenuItem.Text = "Scale";
             //
             // themeToolStripMenuItem
             //
@@ -191,6 +198,7 @@
         private System.Windows.Forms.ToolStripMenuItem deleteItemToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem newFenceToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem titleSizeToolStripMenuItem;
+        private System.Windows.Forms.ToolStripMenuItem scaleToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem themeToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem darkModeToolStripMenuItem;
     }
