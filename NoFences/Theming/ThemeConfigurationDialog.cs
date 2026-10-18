@@ -1977,8 +1977,20 @@ namespace NoFences.Theming
                         itemBounds.Y,
                         Math.Max(1, itemBounds.Width - 48 - profile.ItemPadding.Horizontal),
                         itemBounds.Height);
-                    TextRenderer.DrawText(graphics, items[i], font, textBounds, textColor,
-                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    textColor = Color.FromArgb(255, textColor);
+                    int textHeight = font.Height;
+                    int yOffset = Math.Max(0, (textBounds.Height - textHeight) / 2);
+                    var snappedBounds = new Rectangle(textBounds.X, textBounds.Y + yOffset, textBounds.Width, textHeight);
+
+                    using (var brush = new SolidBrush(textColor))
+                    using (var sf = new StringFormat(StringFormat.GenericTypographic))
+                    {
+                        sf.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.FitBlackBox;
+                        sf.Trimming = StringTrimming.EllipsisCharacter;
+                        sf.LineAlignment = StringAlignment.Center;
+                        sf.Alignment = StringAlignment.Near;
+                        graphics.DrawString(items[i], font, brush, snappedBounds, sf);
+                    }
 
                     if (i == 1)
                     {
@@ -2077,11 +2089,11 @@ namespace NoFences.Theming
         {
             try
             {
-                return new Font(profile.FontFamilyName, profile.FontSize, FontStyle.Regular);
+                return new Font(profile.FontFamilyName, profile.FontSize, profile.FontStyle);
             }
             catch
             {
-                return CreateThemeFont(profile.FontSize, FontStyle.Regular);
+                return CreateThemeFont(profile.FontSize, profile.FontStyle);
             }
         }
 

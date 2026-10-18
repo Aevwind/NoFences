@@ -23,6 +23,8 @@ namespace NoFences.Theming
 
         public float FontSize { get; private set; }
 
+        public FontStyle FontStyle { get; private set; } = FontStyle.Regular;
+
         /// <summary>
         /// 字体可见字形相对其行框中心的视觉补偿量。不同字体的 ascent/descent
         /// 比例不同，即使 TextRenderer 居中行框，字形本身也可能看起来偏上。
@@ -110,6 +112,7 @@ namespace NoFences.Theming
                 Style = ThemeMenuStyle.WindowsXp,
                 FontFamilyName = "Tahoma",
                 FontSize = 8.25f,
+                FontStyle = FontStyle.Regular,
                 TextVerticalOffset = 0,
                 MinimumWidth = 150,
                 ItemHeight = 22,
@@ -146,7 +149,7 @@ namespace NoFences.Theming
                     ? ThemeDrawing.Mix(theme.MenuBackgroundColor, Color.White, 0.20f)
                     : Color.White,
                 DisabledTextColor = dark
-                    ? ThemeDrawing.Mix(theme.MenuBackgroundColor, theme.MenuTextColor, 0.42f)
+                    ? Color.FromArgb(130, 130, 130)
                     : Color.FromArgb(172, 168, 153),
                 PressedColor = theme.MenuHighlightColor
             };
@@ -158,7 +161,8 @@ namespace NoFences.Theming
             {
                 Style = ThemeMenuStyle.Windows11,
                 FontFamilyName = "Segoe UI Variable Text",
-                FontSize = 10.5f,
+                FontSize = 10f,
+                FontStyle = FontStyle.Bold,
                 TextVerticalOffset = 0,
                 MinimumWidth = 170,
                 ItemHeight = 34,
@@ -177,8 +181,7 @@ namespace NoFences.Theming
                 DrawChevronArrow = true,
                 DrawEmbossedDisabledText = false,
                 DropShadowEnabled = true,
-                // ToolStripDropDown 的 Opacity 会连同文字一起透明，因此采用
-                // 接近不透明的 0.98，表达轻微材质感同时保持文字清晰。
+                // 保持背景透明与轻微材质感效果
                 Opacity = 0.98d,
                 ImageMarginColor = theme.MenuBackgroundColor,
                 BorderOuterColor = ThemeDrawing.Mix(
@@ -192,10 +195,9 @@ namespace NoFences.Theming
                     dark ? Color.White : Color.Black,
                     0.08f),
                 SeparatorSecondaryColor = Color.Transparent,
-                DisabledTextColor = ThemeDrawing.Mix(
-                    theme.MenuBackgroundColor,
-                    theme.MenuTextColor,
-                    0.36f),
+                DisabledTextColor = dark
+                    ? Color.FromArgb(130, 130, 130)
+                    : Color.FromArgb(160, 160, 160),
                 PressedColor = ThemeDrawing.Mix(
                     theme.MenuHighlightColor,
                     dark ? Color.White : Color.Black,
@@ -209,7 +211,8 @@ namespace NoFences.Theming
             {
                 Style = ThemeMenuStyle.Standard,
                 FontFamilyName = theme.FontFamilyName,
-                FontSize = 9f,
+                FontSize = 9.5f,
+                FontStyle = FontStyle.Bold,
                 TextVerticalOffset = 0,
                 MinimumWidth = 170,
                 ItemHeight = 26,
@@ -228,8 +231,7 @@ namespace NoFences.Theming
                 DrawChevronArrow = false,
                 DrawEmbossedDisabledText = false,
                 DropShadowEnabled = true,
-                // ToolStripDropDown 的透明度会连同文字一起生效。默认半透明
-                // 面板使用 0.92，在保留桌面材质感的同时确保菜单文字清晰。
+                // 默认半透明面板使用 0.92，在保留桌面材质感和背景透明效果的同时确保菜单文字清晰。
                 Opacity = theme.EnableBlur && theme.MainPanelOpacityPercent < 100
                     ? 0.92d
                     : 1d,
@@ -245,10 +247,9 @@ namespace NoFences.Theming
                     theme.BorderColor,
                     0.55f),
                 SeparatorSecondaryColor = Color.Transparent,
-                DisabledTextColor = ThemeDrawing.Mix(
-                    theme.MenuBackgroundColor,
-                    theme.MenuTextColor,
-                    dark ? 0.42f : 0.48f),
+                DisabledTextColor = dark
+                    ? Color.FromArgb(130, 130, 130)
+                    : Color.FromArgb(160, 160, 160),
                 PressedColor = ThemeDrawing.Mix(
                     theme.MenuHighlightColor,
                     theme.AccentColor,

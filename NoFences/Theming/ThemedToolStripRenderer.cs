@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 using System.Windows.Forms;
 
 namespace NoFences.Theming
@@ -213,42 +214,89 @@ namespace NoFences.Theming
                     TextFormatFlags.VerticalCenter;
             }
 
+            Color textColor;
+            if (!e.Item.Enabled)
+            {
+                textColor = profile.DisabledTextColor;
+            }
+            else if (e.Item.Selected || e.Item.Pressed)
+            {
+                textColor = theme.MenuHighlightTextColor;
+            }
+            else
+            {
+                textColor = theme.MenuTextColor;
+            }
+
+            // 保证文字颜色为完全不透明纯色，不与菜单背景色叠加混合
+            textColor = Color.FromArgb(255, textColor);
+            e.TextColor = textColor;
+
             if (!e.Item.Enabled && profile.DrawEmbossedDisabledText)
             {
                 // XP 的禁用文字采用“右下白色高光 + 前景灰字”的浮雕效果。
-                // TextRenderer 可同时正确处理主文字和右侧快捷键的对齐标志。
                 var highlightBounds = e.TextRectangle;
                 highlightBounds.Offset(1, 1);
-                TextRenderer.DrawText(
+                DrawItemString(
                     e.Graphics,
                     e.Text,
                     e.TextFont,
                     highlightBounds,
                     profile.BorderHighlightColor,
-                    e.TextFormat);
-                TextRenderer.DrawText(
+                    isShortcutText);
+                DrawItemString(
                     e.Graphics,
                     e.Text,
                     e.TextFont,
                     e.TextRectangle,
-                    profile.DisabledTextColor,
-                    e.TextFormat);
+                    textColor,
+                    isShortcutText);
                 return;
             }
 
-            if (!e.Item.Enabled)
+            // 使用 GDI+ 抗锯齿（纯灰度平滑）绘制实体文字，
+            // 彻底解决 GDI ClearType 次像素在半透明/亚克力模糊窗口上与桌面底层背景合成时产生的
+            // 严重彩边、字体过曝变粗发光和在不同背景处颜色不一致的问题。
+            DrawItemString(
+                e.Graphics,
+                e.Text,
+                e.TextFont,
+                e.TextRectangle,
+                textColor,
+                isShortcutText);
+        }
+
+        private static void DrawItemString(
+            Graphics graphics,
+            string text,
+            Font font,
+            Rectangle bounds,
+            Color color,
+            bool isShortcutText)
+        {
+            int textHeight = font.Height;
+            int yOffset = Math.Max(0, (bounds.Height - textHeight) / 2);
+            var snappedBounds = new Rectangle(bounds.X, bounds.Y + yOffset, bounds.Width, textHeight);
+
+            var oldHint = graphics.TextRenderingHint;
+            try
             {
-                e.TextColor = profile.DisabledTextColor;
+                graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                using (var brush = new SolidBrush(color))
+                using (var sf = new StringFormat(StringFormat.GenericTypographic))
+                {
+                    sf.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.FitBlackBox;
+                    sf.Trimming = StringTrimming.EllipsisCharacter;
+                    sf.LineAlignment = StringAlignment.Center;
+                    sf.Alignment = isShortcutText ? StringAlignment.Far : StringAlignment.Near;
+                    sf.HotkeyPrefix = HotkeyPrefix.Show;
+                    graphics.DrawString(text, font, brush, snappedBounds, sf);
+                }
             }
-            else if (e.Item.Selected || e.Item.Pressed)
+            finally
             {
-                e.TextColor = theme.MenuHighlightTextColor;
+                graphics.TextRenderingHint = oldHint;
             }
-            else
-            {
-                e.TextColor = theme.MenuTextColor;
-            }
-            base.OnRenderItemText(e);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
@@ -282,6 +330,8 @@ namespace NoFences.Theming
                 color = theme.MenuHighlightTextColor;
             else
                 color = theme.MenuTextColor;
+
+            color = Color.FromArgb(255, color);
 
             Point center = new Point(
                 e.ArrowRectangle.Left + e.ArrowRectangle.Width / 2 -

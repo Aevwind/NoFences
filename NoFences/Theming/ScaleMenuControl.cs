@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 using System.Windows.Forms;
 
 namespace NoFences.Theming
@@ -255,11 +256,13 @@ namespace NoFences.Theming
             Graphics g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
             bool darkMenu = ThemeDrawing.IsDark(theme.MenuBackgroundColor);
-            Color textColor = theme.MenuTextColor;
-            Color mutedTextColor = ThemeDrawing.WithAlpha(textColor, 185);
+            Color textColor = Color.FromArgb(255, theme.MenuTextColor);
+            Color mutedTextColor = darkMenu
+                ? Color.FromArgb(160, 160, 160)
+                : Color.FromArgb(120, 120, 120);
             Color accentBlue = GetAccentBlue();
 
             using (var bgBrush = new SolidBrush(theme.MenuBackgroundColor))
@@ -269,16 +272,7 @@ namespace NoFences.Theming
 
             // 1. 顶部标题行（图标 + “缩放比例”）
             DrawHeaderScaleIcon(g, headerIconBounds, textColor);
-            TextRenderer.DrawText(
-                g,
-                ThemeText.ScaleMenu,
-                Font,
-                headerTextBounds,
-                textColor,
-                TextFormatFlags.Left |
-                TextFormatFlags.VerticalCenter |
-                TextFormatFlags.SingleLine |
-                TextFormatFlags.NoPadding);
+            DrawLeftString(g, ThemeText.ScaleMenu, Font, headerTextBounds, textColor);
 
             // 2. 滑块轨道与圆形滑块把手
             DrawSlider(g, darkMenu, accentBlue);
@@ -400,32 +394,14 @@ namespace NoFences.Theming
                 }
             }
 
-            TextRenderer.DrawText(
-                g,
-                scalePercent.ToString(),
-                Font,
-                spinnerTextBounds,
-                textColor,
-                TextFormatFlags.HorizontalCenter |
-                TextFormatFlags.VerticalCenter |
-                TextFormatFlags.SingleLine |
-                TextFormatFlags.NoPadding);
+            DrawCenteredString(g, scalePercent.ToString(), Font, spinnerTextBounds, textColor);
 
             Color upColor = hoveredZone == HitZone.SpinnerUp ? textColor : mutedTextColor;
             Color downColor = hoveredZone == HitZone.SpinnerDown ? textColor : mutedTextColor;
             DrawSmallChevron(g, spinnerUpBounds, true, upColor);
             DrawSmallChevron(g, spinnerDownBounds, false, downColor);
 
-            TextRenderer.DrawText(
-                g,
-                "%",
-                Font,
-                percentLabelBounds,
-                mutedTextColor,
-                TextFormatFlags.HorizontalCenter |
-                TextFormatFlags.VerticalCenter |
-                TextFormatFlags.SingleLine |
-                TextFormatFlags.NoPadding);
+            DrawCenteredString(g, "%", Font, percentLabelBounds, mutedTextColor);
         }
 
         /// <summary>绘制 4 个快捷缩放比例预设按钮（50% / 100% / 150% / 200%）。</summary>
@@ -488,16 +464,7 @@ namespace NoFences.Theming
                     g.DrawPath(border, path);
                 }
 
-                TextRenderer.DrawText(
-                    g,
-                    preset + "%",
-                    Font,
-                    bounds,
-                    labelColor,
-                    TextFormatFlags.HorizontalCenter |
-                    TextFormatFlags.VerticalCenter |
-                    TextFormatFlags.SingleLine |
-                    TextFormatFlags.NoPadding);
+                DrawCenteredString(g, preset + "%", Font, bounds, labelColor);
             }
         }
 
@@ -523,16 +490,7 @@ namespace NoFences.Theming
             }
 
             DrawResetIcon(g, resetIconBounds, itemTextColor);
-            TextRenderer.DrawText(
-                g,
-                ThemeText.Reset,
-                Font,
-                resetTextBounds,
-                itemTextColor,
-                TextFormatFlags.Left |
-                TextFormatFlags.VerticalCenter |
-                TextFormatFlags.SingleLine |
-                TextFormatFlags.NoPadding);
+            DrawLeftString(g, ThemeText.Reset, Font, resetTextBounds, itemTextColor);
         }
 
         /// <summary>绘制弹出卡片外边框，与主右键菜单的边框风格保持一致。</summary>
@@ -867,6 +825,49 @@ namespace NoFences.Theming
                 return HitZone.Reset;
 
             return HitZone.None;
+        }
+
+        private static void DrawLeftString(
+            Graphics g,
+            string text,
+            Font font,
+            Rectangle bounds,
+            Color color)
+        {
+            int textHeight = font.Height;
+            int yOffset = Math.Max(0, (bounds.Height - textHeight) / 2);
+            var snappedBounds = new Rectangle(bounds.X, bounds.Y + yOffset, bounds.Width, textHeight);
+
+            using (var brush = new SolidBrush(color))
+            using (var sf = new StringFormat(StringFormat.GenericTypographic))
+            {
+                sf.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.FitBlackBox;
+                sf.Trimming = StringTrimming.EllipsisCharacter;
+                sf.LineAlignment = StringAlignment.Center;
+                sf.Alignment = StringAlignment.Near;
+                g.DrawString(text, font, brush, snappedBounds, sf);
+            }
+        }
+
+        private static void DrawCenteredString(
+            Graphics g,
+            string text,
+            Font font,
+            Rectangle bounds,
+            Color color)
+        {
+            int textHeight = font.Height;
+            int yOffset = Math.Max(0, (bounds.Height - textHeight) / 2);
+            var snappedBounds = new Rectangle(bounds.X, bounds.Y + yOffset, bounds.Width, textHeight);
+
+            using (var brush = new SolidBrush(color))
+            using (var sf = new StringFormat(StringFormat.GenericTypographic))
+            {
+                sf.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.FitBlackBox;
+                sf.LineAlignment = StringAlignment.Center;
+                sf.Alignment = StringAlignment.Center;
+                g.DrawString(text, font, brush, snappedBounds, sf);
+            }
         }
 
         private Color GetAccentBlue()

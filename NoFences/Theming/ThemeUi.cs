@@ -168,7 +168,7 @@ namespace NoFences.Theming
                 strip.Font = GetThemeFont(
                     profile.FontFamilyName,
                     profile.FontSize,
-                    FontStyle.Regular,
+                    profile.FontStyle,
                     theme.FontFamilyName);
                 strip.ImageScalingSize = new Size(
                     ScaleLogical(strip, profile.ImageScalingSize.Width),
@@ -266,7 +266,7 @@ namespace NoFences.Theming
                 item.Font = GetThemeFont(
                     profile.FontFamilyName,
                     profile.FontSize,
-                    item.Font.Style,
+                    profile.FontStyle,
                     theme.FontFamilyName);
 
                 var controlHost = item as ToolStripControlHost;
