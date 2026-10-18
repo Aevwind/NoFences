@@ -157,6 +157,7 @@ namespace NoFences.Theming
             MinimumSize = new Size(860, 620);
             ClientSize = new Size(980, 690);
             DoubleBuffered = true;
+            ShowInTaskbar = true;
             AutoScaleMode = AutoScaleMode.Dpi;
             Padding = new Padding(1); // 为无边框窗口预留 1px 外边框
 

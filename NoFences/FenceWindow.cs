@@ -451,6 +451,13 @@ namespace NoFences
 
             // 先初始化组件以创建窗口句柄（后续 DPI 相关操作需要 Handle）
             InitializeComponent();
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.UserPaint,
+                true);
+            UpdateStyles();
             InitializeScaleSubMenu();
             ApplyContextMenuLocalization();
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
@@ -1709,6 +1716,8 @@ namespace NoFences
                 Math.Max(titleHeight, curRight - curLeft),
                 Math.Max(titleHeight, curBottom - curTop));
             SetBoundsForMinifyState(stepBounds);
+            Invalidate();
+            Update();
         }
 
         /// <summary>从收起（仅标题栏）状态沿标题栏反方向恢复到展开前尺寸。</summary>
@@ -1778,20 +1787,22 @@ namespace NoFences
         }
 
         /// <summary>
-        /// FenceWindow_Paint 会覆盖整个客户区。跳过 WinForms 默认的纯色背景擦除，
-        /// 才能让带透明度的主题背景交给 DWM 模糊合成，而不是先被压平。
+        /// 跳过 WinForms 默认的纯色背景擦除，将背景完全清空为透明（ARGB 0），
+        /// 确保 BufferedGraphics 缓存的位图不会残留上一次或其他界面的绘制像素，
+        /// 同时让带透明度的主题背景正常交给 DWM 进行亚克力模糊合成。
         /// </summary>
         protected override void OnPaintBackground(PaintEventArgs e)
         {
+            e.Graphics.Clear(Color.Transparent);
         }
 
         /// <summary>
-        /// 主渲染方法。所有 GDI+ 绘制在此完成（未启用 DoubleBuffered，
-        /// 因为手动渲染依赖当前绘制周期处理鼠标命中测试）。
-        /// 绘制顺序：背景 → 标题栏 → 条目网格 → 滚动条 → 点击/悬停处理。
+        /// 主渲染方法。所有 GDI+ 绘制在此完成。
+        /// 绘制顺序：清空透明底色 → 背景 → 标题栏 → 条目网格 → 滚动条 → 点击/悬停处理。
         /// </summary>
         private void FenceWindow_Paint(object sender, PaintEventArgs e)
         {
+            e.Graphics.Clear(Color.Transparent);
             var theme = currentTheme ?? ThemePresets.CreateDefault();
             e.Graphics.SetClip(ClientRectangle);
             e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
@@ -2899,7 +2910,8 @@ namespace NoFences
         {
             using (var dialog = new ThemeConfigurationDialog())
             {
-                dialog.ShowDialog(this);
+                dialog.StartPosition = FormStartPosition.CenterScreen;
+                dialog.ShowDialog();
             }
         }
 
