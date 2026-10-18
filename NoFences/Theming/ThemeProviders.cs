@@ -34,6 +34,7 @@ namespace NoFences.Theming
     /// </summary>
     internal sealed class StaticThemeProvider : IThemeProvider
     {
+        private readonly string displayName;
         private readonly ThemeDefinition lightDefinition;
         private readonly ThemeDefinition darkDefinition;
 
@@ -44,14 +45,17 @@ namespace NoFences.Theming
             ThemeDefinition darkDefinition)
         {
             Id = id;
-            DisplayName = displayName;
+            this.displayName = displayName;
             this.lightDefinition = lightDefinition.Clone();
             this.darkDefinition = darkDefinition.Clone();
         }
 
         public string Id { get; }
 
-        public string DisplayName { get; }
+        public string DisplayName =>
+            string.Equals(Id, ThemeIds.Default, System.StringComparison.OrdinalIgnoreCase)
+                ? ThemeText.DefaultTheme
+                : displayName;
 
         public ThemeDefinition CreateTheme(ThemeColorMode colorMode)
         {

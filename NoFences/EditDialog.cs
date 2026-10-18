@@ -1,5 +1,6 @@
 using System;
 using System.Windows.Forms;
+using NoFences.Localization;
 using NoFences.Theming;
 
 namespace NoFences
@@ -24,10 +25,10 @@ namespace NoFences
         /// </summary>
         private void ApplyLocalization()
         {
-            Text = ThemeText.Get("编辑", "Edit");
-            lbName.Text = ThemeText.Get("名称：", "Name:");
-            btnOk.Text = ThemeText.Get("确定", "OK");
-            btnCancel.Text = ThemeText.Get("取消", "Cancel");
+            Text = ThemeText.Key(LKeys.EditDialogTitle);
+            lbName.Text = ThemeText.Key(LKeys.EditDialogNameLabel);
+            btnOk.Text = ThemeText.Ok;
+            btnCancel.Text = ThemeText.Cancel;
         }
 
         private void btnOk_Click(object sender, EventArgs e)

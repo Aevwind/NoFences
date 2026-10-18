@@ -65,6 +65,11 @@
     <Compile Include="HeightDialog.Designer.cs">
       <DependentUpon>HeightDialog.cs</DependentUpon>
     </Compile>
+    <Compile Include="Localization\ILanguagePack.cs" />
+    <Compile Include="Localization\Lang.en-US.cs" />
+    <Compile Include="Localization\Lang.zh-CN.cs" />
+    <Compile Include="Localization\Lang.zh-TW.cs" />
+    <Compile Include="Model\AppSettingsManager.cs" />
     <Compile Include="Model\EntryType.cs" />
     <Compile Include="Model\DesktopShortcutInfo.cs" />
     <Compile Include="Model\DesktopShortcutManager.cs" />
@@ -79,6 +84,10 @@
     </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Theming\SettingsControls.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Theming\SettingsModels.cs" />
     <Compile Include="Theming\ThemeConfigurationDialog.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -106,32 +115,14 @@
     <Compile Include="Win32\IconUtil.cs" />
     <Compile Include="Win32\ShellContextMenu.cs" />
     <Compile Include="Win32\WindowUtil.cs" />
-    <EmbeddedResource Include="EditDialog.cs.resx">
-      <DependentUpon>EditDialog.cs</DependentUpon>
-    </EmbeddedResource>
     <EmbeddedResource Include="EditDialog.resx">
       <DependentUpon>EditDialog.cs</DependentUpon>
       <SubType>Designer</SubType>
     </EmbeddedResource>
-    <EmbeddedResource Include="EditDialog.zh-CN.resx">
-      <DependentUpon>EditDialog.cs</DependentUpon>
-    </EmbeddedResource>
-    <EmbeddedResource Include="FenceWindow.cs.resx">
-      <DependentUpon>FenceWindow.cs</DependentUpon>
-    </EmbeddedResource>
     <EmbeddedResource Include="FenceWindow.resx">
       <DependentUpon>FenceWindow.cs</DependentUpon>
     </EmbeddedResource>
-    <EmbeddedResource Include="FenceWindow.zh-CN.resx">
-      <DependentUpon>FenceWindow.cs</DependentUpon>
-    </EmbeddedResource>
-    <EmbeddedResource Include="HeightDialog.cs.resx">
-      <DependentUpon>HeightDialog.cs</DependentUpon>
-    </EmbeddedResource>
     <EmbeddedResource Include="HeightDialog.resx">
-      <DependentUpon>HeightDialog.cs</DependentUpon>
-    </EmbeddedResource>
-    <EmbeddedResource Include="HeightDialog.zh-CN.resx">
       <DependentUpon>HeightDialog.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="Properties\Resources.resx">

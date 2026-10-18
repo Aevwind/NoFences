@@ -3,6 +3,30 @@ using System.Collections.Generic;
 
 namespace NoFences.Model
 {
+    /// <summary>栅栏标题栏位置枚举。</summary>
+    public enum FenceTitlePosition
+    {
+        /// <summary>顶部（默认）</summary>
+        Top = 0,
+        /// <summary>底部</summary>
+        Bottom = 1,
+        /// <summary>左侧</summary>
+        Left = 2,
+        /// <summary>右侧</summary>
+        Right = 3
+    }
+
+    /// <summary>栅栏标题文本对齐方式枚举。</summary>
+    public enum FenceTitleTextAlignment
+    {
+        /// <summary>居中（默认）</summary>
+        Center = 0,
+        /// <summary>靠左（纵向标题栏时为靠上）</summary>
+        Left = 1,
+        /// <summary>靠右（纵向标题栏时为靠下）</summary>
+        Right = 2
+    }
+
     /// <summary>
     /// 栅栏元数据实体类。通过 XmlSerializer 序列化到
     /// %LocalAppData%/NoFences/<guid>/__fence_metadata.xml。
@@ -43,6 +67,12 @@ namespace NoFences.Model
 
         /// <summary>标题栏高度（逻辑像素，默认 35）</summary>
         public int TitleHeight { get; set; } = 35;
+
+        /// <summary>标题栏位置（默认顶部 Top）</summary>
+        public FenceTitlePosition TitlePosition { get; set; } = FenceTitlePosition.Top;
+
+        /// <summary>标题文本对齐方式（默认居中 Center）</summary>
+        public FenceTitleTextAlignment TitleTextAlignment { get; set; } = FenceTitleTextAlignment.Center;
 
         /// <summary>栅栏内图标与文本的缩放比例百分比（10~200，默认 100）</summary>
         public int ScalePercent { get; set; } = 100;

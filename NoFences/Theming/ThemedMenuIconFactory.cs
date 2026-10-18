@@ -17,6 +17,7 @@ namespace NoFences.Theming
         Rename,
         TitleHeight,
         Scale,
+        Settings,
         Theme,
         DarkMode,
         NewFence,
@@ -139,6 +140,9 @@ namespace NoFences.Theming
                     break;
                 case ThemedMenuIcon.Scale:
                     DrawScaleIcon(graphics, outline);
+                    break;
+                case ThemedMenuIcon.Settings:
+                    DrawSettingsIcon(graphics, outline, theme.MenuBackgroundColor);
                     break;
                 case ThemedMenuIcon.Theme:
                     DrawThemeIcon(graphics, outline, theme.MenuBackgroundColor);
@@ -358,6 +362,43 @@ namespace NoFences.Theming
                     new PointF(12.3f, 3.7f),
                     new PointF(12.3f, 7.2f)
                 });
+            }
+        }
+
+        /// <summary>绘制现代蓝青渐变设置齿轮图标。</summary>
+        private static void DrawSettingsIcon(Graphics graphics, Color outline, Color menuBackground)
+        {
+            const float cx = 8f;
+            const float cy = 8f;
+            using (var toothPen = CreateRoundedPen(Blue, 2.3f))
+            using (var toothOutline = CreateRoundedPen(outline, 3.1f))
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    double angle = i * System.Math.PI / 4.0;
+                    float x1 = cx + (float)(System.Math.Cos(angle) * 3.8);
+                    float y1 = cy + (float)(System.Math.Sin(angle) * 3.8);
+                    float x2 = cx + (float)(System.Math.Cos(angle) * 6.4);
+                    float y2 = cy + (float)(System.Math.Sin(angle) * 6.4);
+                    graphics.DrawLine(toothOutline, x1, y1, x2, y2);
+                    graphics.DrawLine(toothPen, x1, y1, x2, y2);
+                }
+            }
+
+            var outerDisk = new RectangleF(2.7f, 2.7f, 10.6f, 10.6f);
+            using (var fill = new LinearGradientBrush(outerDisk, Blue, Cyan, 45f))
+            using (var border = new Pen(outline, 0.7f))
+            {
+                graphics.FillEllipse(fill, outerDisk);
+                graphics.DrawEllipse(border, outerDisk);
+            }
+
+            var innerHole = new RectangleF(5.6f, 5.6f, 4.8f, 4.8f);
+            using (var holeBrush = new SolidBrush(ThemeDrawing.Mix(menuBackground, Color.White, 0.12f)))
+            using (var holeBorder = new Pen(outline, 0.65f))
+            {
+                graphics.FillEllipse(holeBrush, innerHole);
+                graphics.DrawEllipse(holeBorder, innerHole);
             }
         }
 
@@ -625,6 +666,20 @@ namespace NoFences.Theming
                             graphics.DrawLine(blue, 7, 9, 12, 4);
                             graphics.DrawLine(blue, 9, 4, 12, 4);
                             graphics.DrawLine(blue, 12, 4, 12, 7);
+                        }
+                        break;
+                    case ThemedMenuIcon.Settings:
+                        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                        using (var gearFill = new SolidBrush(Color.FromArgb(95, 152, 226)))
+                        {
+                            graphics.DrawLine(outline, 8, 1, 8, 15);
+                            graphics.DrawLine(outline, 1, 8, 15, 8);
+                            graphics.DrawLine(outline, 3, 3, 13, 13);
+                            graphics.DrawLine(outline, 13, 3, 3, 13);
+                            graphics.FillEllipse(gearFill, 3, 3, 10, 10);
+                            graphics.DrawEllipse(outline, 3, 3, 10, 10);
+                            graphics.FillEllipse(Brushes.White, 6, 6, 4, 4);
+                            graphics.DrawEllipse(outline, 6, 6, 4, 4);
                         }
                         break;
                     case ThemedMenuIcon.Theme:

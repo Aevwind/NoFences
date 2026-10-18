@@ -50,7 +50,24 @@ namespace NoFences
         private bool hasSelectionUpdated;
         private bool hasHoverUpdated;
         private bool isMinified;
+        private int prevWidth;
         private int prevHeight;
+
+        private const int WM_MOVING = 0x0216;
+        private const int WM_ENTERSIZEMOVE = 0x0231;
+        private const int WM_EXITSIZEMOVE = 0x0232;
+        private bool hasMoveOrigin;
+        private Point moveStartCursor;
+        private Point moveStartLocation;
+
+        private bool isUpdatingMinifyBounds;
+        private bool isAnimatingMinify;
+        private Timer minifyAnimationTimer;
+        private readonly System.Diagnostics.Stopwatch minifyAnimationStopwatch =
+            new System.Diagnostics.Stopwatch();
+        private Rectangle minifyAnimStartBounds;
+        private Rectangle minifyAnimTargetBounds;
+        private const double MinifyAnimationDurationMs = 180.0;
 
         // 图标管理模式使用独立多选集合，不改变普通模式的单选与文字展开规则。
         private bool isIconManagementMode;
@@ -91,6 +108,64 @@ namespace NoFences
         private bool usesNativeWindowCorners;
         private bool fenceRemoved;
         private bool persistenceWarningShown;
+
+        private FenceTitlePosition CurrentTitlePosition =>
+            fenceInfo != null ? fenceInfo.TitlePosition : FenceTitlePosition.Top;
+
+        private FenceTitleTextAlignment CurrentTitleTextAlignment =>
+            fenceInfo != null ? fenceInfo.TitleTextAlignment : FenceTitleTextAlignment.Center;
+
+        private bool IsVerticalTitleBar =>
+            CurrentTitlePosition == FenceTitlePosition.Left ||
+            CurrentTitlePosition == FenceTitlePosition.Right;
+
+        /// <summary>获取当前方向下标题栏在窗口客户区内的矩形范围。</summary>
+        private Rectangle GetTitleBarBounds()
+        {
+            switch (CurrentTitlePosition)
+            {
+                case FenceTitlePosition.Bottom:
+                    return new Rectangle(0, Math.Max(0, Height - titleHeight), Width, titleHeight);
+                case FenceTitlePosition.Left:
+                    return new Rectangle(0, 0, titleHeight, Height);
+                case FenceTitlePosition.Right:
+                    return new Rectangle(Math.Max(0, Width - titleHeight), 0, titleHeight, Height);
+                default:
+                    return new Rectangle(0, 0, Width, titleHeight);
+            }
+        }
+
+        /// <summary>获取当前标题栏位置下，图标内容视口在客户区内的矩形范围。</summary>
+        private Rectangle GetContentViewport(int managementFooterHeight)
+        {
+            switch (CurrentTitlePosition)
+            {
+                case FenceTitlePosition.Bottom:
+                    return new Rectangle(
+                        0,
+                        0,
+                        Width,
+                        Math.Max(0, Height - titleHeight - managementFooterHeight));
+                case FenceTitlePosition.Left:
+                    return new Rectangle(
+                        titleHeight,
+                        0,
+                        Math.Max(0, Width - titleHeight),
+                        Math.Max(0, Height - managementFooterHeight));
+                case FenceTitlePosition.Right:
+                    return new Rectangle(
+                        0,
+                        0,
+                        Math.Max(0, Width - titleHeight),
+                        Math.Max(0, Height - managementFooterHeight));
+                default:
+                    return new Rectangle(
+                        0,
+                        titleHeight,
+                        Width,
+                        Math.Max(0, Height - titleHeight - managementFooterHeight));
+            }
+        }
 
         /// <summary>获取当前栅栏有效的缩放比例百分比（10%~200%，默认 100%）。</summary>
         private int GetEffectiveScalePercent()
@@ -379,6 +454,7 @@ namespace NoFences
             InitializeScaleSubMenu();
             ApplyContextMenuLocalization();
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
+            autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
 
             // 应用 Windows 视觉效果。DWM 投影需等主题圆角确定后再设置，
             // 否则矩形投影会残留在圆角外侧并在拖动时形成不透明角块。
@@ -424,13 +500,15 @@ namespace NoFences
             Text = fenceInfo.Name;
             ApplyPersistedBounds();
 
+            prevWidth = Width;
             prevHeight = Height;
             lockedToolStripMenuItem.Checked = fenceInfo.Locked;
             minifyToolStripMenuItem.Checked = fenceInfo.CanMinify;
 
             ThemeManager.Instance.ThemeChanged += ThemeManager_ThemeChanged;
+            AppSettingsManager.Instance.SettingsChanged += AppSettingsManager_SettingsChanged;
             ApplyTheme(currentTheme);
-            Minify(); // 初始应用最小化状态
+            Minify(animate: false); // 初始立即应用收起状态（启动时不播放过渡动画）
         }
 
         /// <summary>初始化右键菜单“缩放比例”子菜单及其内嵌的自定义滑块卡片。</summary>
@@ -663,7 +741,7 @@ namespace NoFences
             SetContextMenuIcon(renameToolStripMenuItem, ThemedMenuIcon.Rename);
             SetContextMenuIcon(titleSizeToolStripMenuItem, ThemedMenuIcon.TitleHeight);
             SetContextMenuIcon(scaleToolStripMenuItem, ThemedMenuIcon.Scale);
-            SetContextMenuIcon(themeToolStripMenuItem, ThemedMenuIcon.Theme);
+            SetContextMenuIcon(themeToolStripMenuItem, ThemedMenuIcon.Settings);
             SetContextMenuIcon(newFenceToolStripMenuItem, ThemedMenuIcon.NewFence);
             SetContextMenuIcon(exitToolStripMenuItem, ThemedMenuIcon.CloseFence);
             SetContextMenuIcon(quitApplicationToolStripMenuItem, ThemedMenuIcon.QuitApplication);
@@ -691,6 +769,7 @@ namespace NoFences
             scaleToolStripMenuItem.Image = null;
             themeToolStripMenuItem.Image = null;
             darkModeToolStripMenuItem.Image = null;
+            autoSnapToolStripMenuItem.Image = null;
             newFenceToolStripMenuItem.Image = null;
             exitToolStripMenuItem.Image = null;
             quitApplicationToolStripMenuItem.Image = null;
@@ -712,6 +791,23 @@ namespace NoFences
             }
 
             ApplyTheme(ThemeManager.Instance.CurrentTheme);
+        }
+
+        private void AppSettingsManager_SettingsChanged(object sender, EventArgs e)
+        {
+            if (IsDisposed || Disposing)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => AppSettingsManager_SettingsChanged(sender, e)));
+                return;
+            }
+
+            autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
+            ApplyContextMenuLocalization();
+            scaleMenuControl?.Invalidate();
+            Invalidate(true);
         }
 
         /// <summary>
@@ -797,25 +893,70 @@ namespace NoFences
         }
 
         /// <summary>
-        /// 窗口消息处理。实现无边框窗口的拖动/调整大小、DPI 响应、
+        /// 窗口消息处理。实现无边框窗口的拖动/调整大小、自动吸附、DPI 响应、
         /// 图标度量动态更新等自定义行为。
         /// </summary>
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == WM_ENTERSIZEMOVE)
+            {
+                hasMoveOrigin = true;
+                moveStartCursor = Cursor.Position;
+                moveStartLocation = Location;
+            }
+            else if (m.Msg == WM_EXITSIZEMOVE)
+            {
+                hasMoveOrigin = false;
+            }
+            else if (m.Msg == WM_MOVING && AppSettingsManager.Instance.AutoSnapEnabled)
+            {
+                var rect = Marshal.PtrToStructure<RECT>(m.LParam);
+                int width = rect.Width;
+                int height = rect.Height;
+
+                if (!hasMoveOrigin)
+                {
+                    hasMoveOrigin = true;
+                    moveStartCursor = Cursor.Position;
+                    moveStartLocation = new Point(rect.Left, rect.Top);
+                }
+
+                Point cursor = Cursor.Position;
+                int targetLeft = moveStartLocation.X + (cursor.X - moveStartCursor.X);
+                int targetTop = moveStartLocation.Y + (cursor.Y - moveStartCursor.Y);
+
+                ApplyAutoSnapPosition(ref targetLeft, ref targetTop, width, height, cursor);
+
+                rect.Left = targetLeft;
+                rect.Top = targetTop;
+                rect.Right = targetLeft + width;
+                rect.Bottom = targetTop + height;
+                Marshal.StructureToPtr(rect, m.LParam, true);
+                m.Result = (IntPtr)1;
+                return;
+            }
+
             // WM_SIZING：限制窗口最小尺寸
-            // 最小宽度取标题文本宽度和图标列宽的最大值（确保标题和图标都能完整显示）
-            // 最小高度至少为标题栏 + 一个图标项 + 内边距
             if (m.Msg == WM_SIZING)
             {
                 int titleTextWidth;
                 using (var g = CreateGraphics())
                     titleTextWidth = (int)Math.Ceiling(g.MeasureString(Text, titleFont).Width);
-                // 标题文本左右需留边距
-                int titleMinWidth = titleTextWidth + itemPadding * 2;
-                // 单个图标列的最小宽度
-                int iconMinWidth = itemPadding * 2 + itemWidth;
-                int minWidth = Math.Max(titleMinWidth, iconMinWidth);
-                int minHeight = titleHeight + itemHeight + itemPadding * 2;
+
+                int minWidth;
+                int minHeight;
+                if (IsVerticalTitleBar)
+                {
+                    minWidth = titleHeight + itemWidth + itemPadding * 2;
+                    minHeight = Math.Max(titleTextWidth + itemPadding * 2, itemHeight + itemPadding * 2);
+                }
+                else
+                {
+                    int titleMinWidth = titleTextWidth + itemPadding * 2;
+                    int iconMinWidth = itemPadding * 2 + itemWidth;
+                    minWidth = Math.Max(titleMinWidth, iconMinWidth);
+                    minHeight = titleHeight + itemHeight + itemPadding * 2;
+                }
 
                 var rect = Marshal.PtrToStructure<RECT>(m.LParam);
                 int edge = m.WParam.ToInt32();
@@ -890,14 +1031,14 @@ namespace NoFences
             {
                 var pt = PointToClient(new Point(m.LParam.ToInt32()));
 
-                // 标题栏区域 → 模拟标题栏拖动
-                if ((int)m.Result == HTCLIENT && pt.Y < titleHeight)
+                // 标题栏区域（支持顶/底/左/右四向）→ 模拟标题栏拖动
+                if ((int)m.Result == HTCLIENT && GetTitleBarBounds().Contains(pt))
                 {
                     m.Result = (IntPtr)HTCAPTION;
                     FenceWindow_MouseEnter(null, null);
                 }
 
-                // 四角：10px 热区用于对角线调整大小
+                // 四角与四边：10px 热区用于调整大小
                 if (pt.X < 10 && pt.Y < 10)
                     m.Result = new IntPtr(HTTOPLEFT);
                 else if (pt.X > (Width - 10) && pt.Y < 10)
@@ -906,6 +1047,8 @@ namespace NoFences
                     m.Result = new IntPtr(HTBOTTOMLEFT);
                 else if (pt.X > (Width - 10) && pt.Y > (Height - 10))
                     m.Result = new IntPtr(HTBOTTOMRIGHT);
+                else if (pt.Y < 10 && CurrentTitlePosition == FenceTitlePosition.Bottom)
+                    m.Result = new IntPtr(HTTOP);
                 else if (pt.Y > (Height - 10))
                     m.Result = new IntPtr(HTBOTTOM);
                 else if (pt.X < 10)
@@ -913,6 +1056,94 @@ namespace NoFences
                 else if (pt.X > (Width - 10))
                     m.Result = new IntPtr(HTRIGHT);
             }
+        }
+
+        /// <summary>
+        /// 计算窗口移动时的边缘与邻近桌面分区自动吸附坐标。
+        /// 基于鼠标拖拽起始偏移计算原始坐标，确保慢速移出吸附区时依然顺滑不卡死。
+        /// </summary>
+        private void ApplyAutoSnapPosition(ref int left, ref int top, int width, int height, Point cursor)
+        {
+            int snapDist = LogicalPixelsToDevice(14);
+            int bestDx = snapDist + 1;
+            int bestDy = snapDist + 1;
+            int snappedLeft = left;
+            int snappedTop = top;
+
+            void TrySnapX(int candidateLeft, int distance)
+            {
+                if (distance <= snapDist && distance < bestDx)
+                {
+                    bestDx = distance;
+                    snappedLeft = candidateLeft;
+                }
+            }
+
+            void TrySnapY(int candidateTop, int distance)
+            {
+                if (distance <= snapDist && distance < bestDy)
+                {
+                    bestDy = distance;
+                    snappedTop = candidateTop;
+                }
+            }
+
+            // 1. 吸附当前屏幕工作区与屏幕物理边缘
+            Screen screen = Screen.FromPoint(cursor);
+            if (screen != null)
+            {
+                Rectangle wa = screen.WorkingArea;
+                TrySnapX(wa.Left, Math.Abs(left - wa.Left));
+                TrySnapX(wa.Right - width, Math.Abs((left + width) - wa.Right));
+                TrySnapY(wa.Top, Math.Abs(top - wa.Top));
+                TrySnapY(wa.Bottom - height, Math.Abs((top + height) - wa.Bottom));
+
+                Rectangle sb = screen.Bounds;
+                TrySnapX(sb.Left, Math.Abs(left - sb.Left));
+                TrySnapX(sb.Right - width, Math.Abs((left + width) - sb.Right));
+                TrySnapY(sb.Top, Math.Abs(top - sb.Top));
+                TrySnapY(sb.Bottom - height, Math.Abs((top + height) - sb.Bottom));
+            }
+
+            // 2. 吸附其他可见桌面分区的四边（外贴合与边缘对齐）
+            foreach (Form form in Application.OpenForms)
+            {
+                var other = form as FenceWindow;
+                if (other == null || other == this || !other.Visible || other.IsDisposed)
+                    continue;
+
+                Rectangle ob = other.Bounds;
+                bool verticalNear = (top <= ob.Bottom + snapDist * 2) && (top + height >= ob.Top - snapDist * 2);
+                bool verticalAlignNear = (top <= ob.Bottom + snapDist * 10) && (top + height >= ob.Top - snapDist * 10);
+
+                if (verticalNear)
+                {
+                    TrySnapX(ob.Right, Math.Abs(left - ob.Right));
+                    TrySnapX(ob.Left - width, Math.Abs((left + width) - ob.Left));
+                }
+                if (verticalAlignNear)
+                {
+                    TrySnapX(ob.Left, Math.Abs(left - ob.Left));
+                    TrySnapX(ob.Right - width, Math.Abs((left + width) - ob.Right));
+                }
+
+                bool horizontalNear = (left <= ob.Right + snapDist * 2) && (left + width >= ob.Left - snapDist * 2);
+                bool horizontalAlignNear = (left <= ob.Right + snapDist * 10) && (left + width >= ob.Left - snapDist * 10);
+
+                if (horizontalNear)
+                {
+                    TrySnapY(ob.Bottom, Math.Abs(top - ob.Bottom));
+                    TrySnapY(ob.Top - height, Math.Abs((top + height) - ob.Top));
+                }
+                if (horizontalAlignNear)
+                {
+                    TrySnapY(ob.Top, Math.Abs(top - ob.Top));
+                    TrySnapY(ob.Bottom - height, Math.Abs((top + height) - ob.Bottom));
+                }
+            }
+
+            left = snappedLeft;
+            top = snappedTop;
         }
 
         /// <summary>移除当前栅栏（删除分区及其保存的数据）。</summary>
@@ -994,11 +1225,7 @@ namespace NoFences
         /// <summary>从应用右键菜单进入图标多选管理模式。</summary>
         private void iconManagementToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            if (isMinified)
-            {
-                isMinified = false;
-                Height = prevHeight;
-            }
+            ExpandFromMinified(animate: false);
 
             isIconManagementMode = true;
             iconManagementSelection.Clear();
@@ -1077,8 +1304,8 @@ namespace NoFences
                 return;
             }
 
-            int footerTop = Height - GetIconManagementFooterHeight();
-            if (location.Y < titleHeight || location.Y >= footerTop)
+            Rectangle viewport = GetContentViewport(GetIconManagementFooterHeight());
+            if (!viewport.Contains(location))
                 return;
 
             foreach (KeyValuePair<string, Rectangle> item in entryHitBounds)
@@ -1100,18 +1327,19 @@ namespace NoFences
         /// </summary>
         private void ApplyContextMenuLocalization()
         {
-            deleteItemToolStripMenuItem.Text = ThemeText.Get("删除项目", "Delete item");
-            lockedToolStripMenuItem.Text = ThemeText.Get("锁定", "Lock");
-            minifyToolStripMenuItem.Text = ThemeText.Get("收起窗口", "Minify");
-            renameToolStripMenuItem.Text = ThemeText.Get("重命名", "Rename");
-            titleSizeToolStripMenuItem.Text = ThemeText.Get("标题尺寸...", "Title size...");
+            deleteItemToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuDeleteItem);
+            lockedToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuLock);
+            minifyToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuMinify);
+            renameToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuRename);
+            titleSizeToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuTitleSize);
             scaleToolStripMenuItem.Text = ThemeText.ScaleMenu;
             iconManagementToolStripMenuItem.Text = ThemeText.IconManagement;
-            themeToolStripMenuItem.Text = ThemeText.ThemeMenu;
+            themeToolStripMenuItem.Text = ThemeText.SettingsMenu;
             darkModeToolStripMenuItem.Text = ThemeText.DarkMode;
-            newFenceToolStripMenuItem.Text = ThemeText.Get("新建桌面分区", "New fence");
-            exitToolStripMenuItem.Text = ThemeText.Get("移除桌面分区", "Remove fence");
-            quitApplicationToolStripMenuItem.Text = ThemeText.Get("退出程序", "Exit application");
+            autoSnapToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuAutoSnap);
+            newFenceToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuNewFence);
+            exitToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuRemoveFence);
+            quitApplicationToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuQuitApp);
         }
 
         /// <summary>
@@ -1124,6 +1352,7 @@ namespace NoFences
             deleteItemToolStripMenuItem.Visible = hoveringItem != null;
             iconManagementToolStripMenuItem.Enabled = !isIconManagementMode;
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
+            autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
             if (scaleMenuControl != null)
                 scaleMenuControl.ScalePercent = GetEffectiveScalePercent();
             // 可见性和勾选状态会触发 ToolStrip 重新布局；在这些状态更新后应用
@@ -1183,10 +1412,22 @@ namespace NoFences
             // 等待保存逻辑而只显示底层 Acrylic 表面。
             Refresh();
 
+            if (isUpdatingMinifyBounds || isAnimatingMinify)
+                return;
+
+            if (!isMinified)
+            {
+                prevWidth = Width;
+                prevHeight = Height;
+            }
+
             throttledResize.Run(() =>
             {
-                fenceInfo.Width = Width;
-                fenceInfo.Height = isMinified ? prevHeight : Height; // 最小化时保存展开前高度
+                Rectangle expanded = GetCurrentExpandedBounds();
+                fenceInfo.PosX = expanded.X;
+                fenceInfo.PosY = expanded.Y;
+                fenceInfo.Width = expanded.Width;
+                fenceInfo.Height = expanded.Height;
                 Save();
             });
         }
@@ -1195,12 +1436,22 @@ namespace NoFences
         private void FenceWindow_MouseMove(object sender, MouseEventArgs e)
         {
             string hitPath = null;
-            foreach (KeyValuePair<string, Rectangle> item in entryHitBounds)
+            if (!isIconManagementMode &&
+                !string.IsNullOrEmpty(selectedItem) &&
+                entryHitBounds.TryGetValue(selectedItem, out Rectangle selectedBounds) &&
+                selectedBounds.Contains(e.Location))
             {
-                if (item.Value.Contains(e.Location))
+                hitPath = selectedItem;
+            }
+            else
+            {
+                foreach (KeyValuePair<string, Rectangle> item in entryHitBounds)
                 {
-                    hitPath = item.Key;
-                    break;
+                    if (item.Value.Contains(e.Location))
+                    {
+                        hitPath = item.Key;
+                        break;
+                    }
                 }
             }
 
@@ -1223,47 +1474,284 @@ namespace NoFences
             Invalidate();
         }
 
-        /// <summary>鼠标进入：如果允许最小化且当前是最小化状态，则展开窗口。</summary>
+        /// <summary>鼠标进入：如果允许最小化且当前是最小化状态，则向标题栏反方向展开窗口。</summary>
         private void FenceWindow_MouseEnter(object sender, EventArgs e)
         {
             if (minifyToolStripMenuItem.Checked && isMinified)
             {
-                isMinified = false;
-                Height = prevHeight;
+                ExpandFromMinified();
             }
         }
 
-        /// <summary>鼠标离开：尝试最小化窗口。选中状态不取消，由用户点击其他条目或空白区域来改变。</summary>
+        /// <summary>鼠标离开：尝试向标题栏方向收起窗口。选中状态不取消，由用户点击其他条目或空白区域来改变。</summary>
         private void FenceWindow_MouseLeave(object sender, EventArgs e)
         {
             iconManagementHoverTarget = 0;
+            if (isAnimatingMinify && !isMinified && Bounds.Contains(MousePosition))
+            {
+                return;
+            }
+
             Minify();
             Refresh();
         }
 
+        /// <summary>根据展开状态下的完整窗口矩形，计算向标题栏方向收起后的窗口矩形。</summary>
+        private Rectangle GetCollapsedBoundsFromExpanded(Rectangle expanded)
+        {
+            switch (CurrentTitlePosition)
+            {
+                case FenceTitlePosition.Bottom:
+                    return new Rectangle(
+                        expanded.X,
+                        expanded.Bottom - titleHeight,
+                        expanded.Width,
+                        titleHeight);
+                case FenceTitlePosition.Left:
+                    return new Rectangle(
+                        expanded.X,
+                        expanded.Y,
+                        titleHeight,
+                        expanded.Height);
+                case FenceTitlePosition.Right:
+                    return new Rectangle(
+                        expanded.Right - titleHeight,
+                        expanded.Y,
+                        titleHeight,
+                        expanded.Height);
+                default: // Top
+                    return new Rectangle(
+                        expanded.X,
+                        expanded.Y,
+                        expanded.Width,
+                        titleHeight);
+            }
+        }
+
+        /// <summary>根据收起状态下的标题栏窗口矩形，计算从标题栏方向反向展开后的完整窗口矩形。</summary>
+        private Rectangle GetExpandedBoundsFromCollapsed(Rectangle collapsed)
+        {
+            int expW = prevWidth > titleHeight ? prevWidth : Math.Max(collapsed.Width, fenceInfo.Width);
+            int expH = prevHeight > titleHeight ? prevHeight : Math.Max(collapsed.Height, fenceInfo.Height);
+            switch (CurrentTitlePosition)
+            {
+                case FenceTitlePosition.Bottom:
+                    return new Rectangle(
+                        collapsed.X,
+                        collapsed.Bottom - expH,
+                        expW,
+                        expH);
+                case FenceTitlePosition.Left:
+                    return new Rectangle(
+                        collapsed.X,
+                        collapsed.Y,
+                        expW,
+                        expH);
+                case FenceTitlePosition.Right:
+                    return new Rectangle(
+                        collapsed.Right - expW,
+                        collapsed.Y,
+                        expW,
+                        expH);
+                default: // Top
+                    return new Rectangle(
+                        collapsed.X,
+                        collapsed.Y,
+                        expW,
+                        expH);
+            }
+        }
+
+        /// <summary>获取当前分区的完整展开态屏幕矩形（即使处于收起或收起过渡动画中也能返回展开后的真实坐标与宽高）。</summary>
+        private Rectangle GetCurrentExpandedBounds()
+        {
+            if (isAnimatingMinify)
+            {
+                return isMinified
+                    ? GetExpandedBoundsFromCollapsed(minifyAnimTargetBounds)
+                    : minifyAnimTargetBounds;
+            }
+
+            if (isMinified)
+            {
+                return GetExpandedBoundsFromCollapsed(Bounds);
+            }
+
+            return Bounds;
+        }
+
+        private void SetBoundsForMinifyState(Rectangle bounds)
+        {
+            bool prevFlag = isUpdatingMinifyBounds;
+            isUpdatingMinifyBounds = true;
+            try
+            {
+                Bounds = bounds;
+            }
+            finally
+            {
+                isUpdatingMinifyBounds = prevFlag;
+            }
+        }
+
+        private void StopMinifyAnimation()
+        {
+            isAnimatingMinify = false;
+            minifyAnimationStopwatch.Stop();
+            if (minifyAnimationTimer != null && minifyAnimationTimer.Enabled)
+            {
+                minifyAnimationTimer.Stop();
+            }
+        }
+
+        private void ApplyOrAnimateMinifyBounds(Rectangle targetBounds, bool animate)
+        {
+            if (!animate || !IsHandleCreated || !Visible)
+            {
+                StopMinifyAnimation();
+                SetBoundsForMinifyState(targetBounds);
+                Refresh();
+                return;
+            }
+
+            if (Bounds == targetBounds)
+            {
+                StopMinifyAnimation();
+                Refresh();
+                return;
+            }
+
+            minifyAnimStartBounds = Bounds;
+            minifyAnimTargetBounds = targetBounds;
+            isAnimatingMinify = true;
+            minifyAnimationStopwatch.Restart();
+
+            if (minifyAnimationTimer == null)
+            {
+                minifyAnimationTimer = new Timer { Interval = 15 };
+                minifyAnimationTimer.Tick += MinifyAnimationTimer_Tick;
+            }
+            if (!minifyAnimationTimer.Enabled)
+            {
+                minifyAnimationTimer.Start();
+            }
+        }
+
+        private void MinifyAnimationTimer_Tick(object sender, EventArgs e)
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated)
+            {
+                StopMinifyAnimation();
+                return;
+            }
+
+            double elapsed = minifyAnimationStopwatch.Elapsed.TotalMilliseconds;
+            double t = Math.Min(1.0, Math.Max(0.0, elapsed / MinifyAnimationDurationMs));
+            double inv = 1.0 - t;
+            double eased = 1.0 - inv * inv * inv; // Cubic Ease-Out
+
+            if (t >= 1.0)
+            {
+                Rectangle finalBounds = minifyAnimTargetBounds;
+                StopMinifyAnimation();
+                SetBoundsForMinifyState(finalBounds);
+                Refresh();
+
+                bool menuOpen = (appContextMenu != null && appContextMenu.Visible) ||
+                    (scaleToolStripMenuItem?.DropDown != null && scaleToolStripMenuItem.DropDown.Visible);
+                if (!isIconManagementMode && !menuOpen && minifyToolStripMenuItem.Checked)
+                {
+                    if (!isMinified && !Bounds.Contains(MousePosition))
+                    {
+                        Minify();
+                    }
+                    else if (isMinified && Bounds.Contains(MousePosition))
+                    {
+                        ExpandFromMinified();
+                    }
+                }
+                return;
+            }
+
+            int curLeft = (int)Math.Round(minifyAnimStartBounds.Left + (minifyAnimTargetBounds.Left - minifyAnimStartBounds.Left) * eased);
+            int curTop = (int)Math.Round(minifyAnimStartBounds.Top + (minifyAnimTargetBounds.Top - minifyAnimStartBounds.Top) * eased);
+            int curRight = (int)Math.Round(minifyAnimStartBounds.Right + (minifyAnimTargetBounds.Right - minifyAnimStartBounds.Right) * eased);
+            int curBottom = (int)Math.Round(minifyAnimStartBounds.Bottom + (minifyAnimTargetBounds.Bottom - minifyAnimStartBounds.Bottom) * eased);
+
+            // 锚定标题栏所在静止边缘，消除帧间圆整误差导致的 1px 抖动
+            switch (CurrentTitlePosition)
+            {
+                case FenceTitlePosition.Bottom:
+                    curBottom = minifyAnimTargetBounds.Bottom;
+                    curLeft = minifyAnimTargetBounds.Left;
+                    curRight = minifyAnimTargetBounds.Right;
+                    break;
+                case FenceTitlePosition.Left:
+                    curLeft = minifyAnimTargetBounds.Left;
+                    curTop = minifyAnimTargetBounds.Top;
+                    curBottom = minifyAnimTargetBounds.Bottom;
+                    break;
+                case FenceTitlePosition.Right:
+                    curRight = minifyAnimTargetBounds.Right;
+                    curTop = minifyAnimTargetBounds.Top;
+                    curBottom = minifyAnimTargetBounds.Bottom;
+                    break;
+                default: // Top
+                    curTop = minifyAnimTargetBounds.Top;
+                    curLeft = minifyAnimTargetBounds.Left;
+                    curRight = minifyAnimTargetBounds.Right;
+                    break;
+            }
+
+            var stepBounds = new Rectangle(
+                curLeft,
+                curTop,
+                Math.Max(titleHeight, curRight - curLeft),
+                Math.Max(titleHeight, curBottom - curTop));
+            SetBoundsForMinifyState(stepBounds);
+        }
+
+        /// <summary>从收起（仅标题栏）状态沿标题栏反方向恢复到展开前尺寸。</summary>
+        private void ExpandFromMinified(bool? animate = null)
+        {
+            if (!isMinified)
+                return;
+
+            Rectangle expandedBounds = GetCurrentExpandedBounds();
+            isMinified = false;
+            bool useAnim = animate ?? AppSettingsManager.Instance.MinifyAnimationEnabled;
+            ApplyOrAnimateMinifyBounds(expandedBounds, useAnim);
+        }
+
         /// <summary>
-        /// 将窗口收缩为仅标题栏（最小化状态）。
+        /// 将窗口向标题栏所在方向收缩为仅标题栏（最小化状态）。
         /// 仅在 CanMinify 启用且未最小化时生效；右键菜单展开期间保持展开以方便预览缩放。
         /// </summary>
-        private void Minify()
+        private void Minify(bool? animate = null)
         {
             bool menuOpen = (appContextMenu != null && appContextMenu.Visible) ||
                 (scaleToolStripMenuItem?.DropDown != null && scaleToolStripMenuItem.DropDown.Visible);
             if (!isIconManagementMode && !menuOpen && minifyToolStripMenuItem.Checked && !isMinified)
             {
+                Rectangle expandedBounds = GetCurrentExpandedBounds();
+                prevWidth = expandedBounds.Width;
+                prevHeight = expandedBounds.Height;
+                Rectangle collapsedBounds = GetCollapsedBoundsFromExpanded(expandedBounds);
                 isMinified = true;
-                prevHeight = Height;
-                Height = titleHeight;
-                Refresh();
+                bool useAnim = animate ?? AppSettingsManager.Instance.MinifyAnimationEnabled;
+                ApplyOrAnimateMinifyBounds(collapsedBounds, useAnim);
             }
         }
 
         private void minifyToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            if (isMinified)
+            if (isMinified && !minifyToolStripMenuItem.Checked)
             {
-                Height = prevHeight;
-                isMinified = false;
+                ExpandFromMinified();
+            }
+            else if (!isMinified && minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition))
+            {
+                Minify();
             }
             fenceInfo.CanMinify = minifyToolStripMenuItem.Checked;
             Save();
@@ -1326,45 +1814,58 @@ namespace NoFences
                 theme.BackgroundImageLayout,
                 theme.BackgroundImageOpacityPercent);
 
-            // 标题背景先于标题文字绘制，避免降低文字本身的不透明度。
+            // 标题背景与标题文字按配置的标题栏位置（顶/底/左/右）与对齐方式（左/中/右）绘制。
+            Rectangle titleBounds = GetTitleBarBounds();
             using (var titleBrush = new SolidBrush(ThemeDrawing.WithOpacity(
                 theme.TitleBarColor,
                 theme.TitleBarOpacityPercent)))
             {
-                e.Graphics.FillRectangle(
-                    titleBrush,
-                    new RectangleF(0, 0, Width, titleHeight));
+                e.Graphics.FillRectangle(titleBrush, titleBounds);
             }
-            using (var titleTextBrush = new SolidBrush(theme.TitleTextColor))
-            using (var titleFormat = new StringFormat { Alignment = StringAlignment.Center })
+            DrawTitleBarText(e.Graphics, theme, titleBounds);
+
+            int managementFooterHeight = isIconManagementMode
+                ? GetIconManagementFooterHeight()
+                : 0;
+            Rectangle contentViewport = GetContentViewport(managementFooterHeight);
+
+            // 在进入条目遍历前预先根据当前命中矩形更新点击选中项，
+            // 确保点击溢出文本条目时在同一渲染帧立即触发 needsExpand 展开，无需等待鼠标移出。
+            if (!isIconManagementMode && shouldUpdateSelection && entryHitBounds.Count > 0)
             {
-                var previousOffsetMode = e.Graphics.PixelOffsetMode;
-                e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
-                e.Graphics.DrawString(
-                    Text,
-                    titleFont,
-                    titleTextBrush,
-                    new PointF((float)Math.Round(Width / 2f), (float)titleOffset),
-                    titleFormat);
-                e.Graphics.PixelOffsetMode = previousOffsetMode;
+                Point clickPos = PointToClient(MousePosition);
+                string clickedPath = null;
+                if (contentViewport.Contains(clickPos))
+                {
+                    if (!string.IsNullOrEmpty(selectedItem) &&
+                        entryHitBounds.TryGetValue(selectedItem, out Rectangle selectedBounds) &&
+                        selectedBounds.Contains(clickPos))
+                    {
+                        clickedPath = selectedItem;
+                    }
+                    else
+                    {
+                        foreach (KeyValuePair<string, Rectangle> kvp in entryHitBounds)
+                        {
+                            if (kvp.Value.Contains(clickPos))
+                            {
+                                clickedPath = kvp.Key;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                selectedItem = clickedPath;
+                shouldUpdateSelection = false;
+                hasSelectionUpdated = true;
             }
 
-            // 条目网格布局：从左到右、从上到下排列
+            // 条目网格布局：从左到右、从上到下排列在 contentViewport 内
             var x = itemPadding;
             var y = itemPadding;
             scrollHeight = 0;
             entryHitBounds.Clear();
-            int managementFooterHeight = isIconManagementMode
-                ? GetIconManagementFooterHeight()
-                : 0;
-            int contentViewportHeight = Math.Max(
-                0,
-                Height - titleHeight - managementFooterHeight);
-            var contentViewport = new Rectangle(
-                0,
-                titleHeight,
-                Width,
-                contentViewportHeight);
             var contentState = e.Graphics.Save();
             e.Graphics.SetClip(
                 contentViewport,
@@ -1379,6 +1880,25 @@ namespace NoFences
                 var entry = FenceEntry.FromPath(file);
                 if (entry == null)
                     continue;
+
+                int drawX = contentViewport.X + x;
+                int drawY = contentViewport.Y + y - scrollOffset;
+
+                // 若首次渲染尚无 entryHitBounds 缓存时发生点击，在此提前命中判定
+                if (!isIconManagementMode && shouldUpdateSelection)
+                {
+                    int textInsetPre = Math.Min(6, Math.Max(1, itemWidth / 6));
+                    var textMaxSizePre = new SizeF(Math.Max(4, itemWidth - textInsetPre * 2), textHeight);
+                    var textSizePre = e.Graphics.MeasureString(entry.Name, iconFont, textMaxSizePre, standardIconTextFormat);
+                    var preRect = new Rectangle(drawX - 2, drawY - 2, itemWidth + 2, iconSize + (int)textSizePre.Height + (itemPadding / 3) + 2);
+                    var mousePos = PointToClient(MousePosition);
+                    if (contentViewport.Contains(mousePos) && preRect.Contains(mousePos))
+                    {
+                        selectedItem = entry.Path;
+                        shouldUpdateSelection = false;
+                        hasSelectionUpdated = true;
+                    }
+                }
 
                 bool isSelected = !isIconManagementMode && entry.Path == selectedItem;
                 bool needsExpand = false;
@@ -1399,16 +1919,16 @@ namespace NoFences
                 Rectangle entryBounds = RenderEntry(
                     e.Graphics,
                     entry,
-                    x,
-                    y + titleHeight - scrollOffset,
+                    drawX,
+                    drawY,
                     skipText: needsExpand);
                 entryHitBounds[entry.Path] = entryBounds;
 
                 if (needsExpand)
                 {
                     expandEntryName = entry.Name;
-                    expandEntryX = x;
-                    expandEntryY = y + titleHeight - scrollOffset;
+                    expandEntryX = drawX;
+                    expandEntryY = drawY;
                     expandEntry = entry;
                 }
 
@@ -1416,8 +1936,11 @@ namespace NoFences
                 if (itemBottom > scrollHeight)
                     scrollHeight = itemBottom;
 
+                int layoutViewportWidth = (isMinified || isAnimatingMinify) && IsVerticalTitleBar
+                    ? Math.Max(contentViewport.Width, prevWidth - titleHeight)
+                    : contentViewport.Width;
                 x += itemWidth + itemPadding;
-                if (x + itemWidth > Width) // 换行
+                if (x + itemWidth > layoutViewportWidth) // 换行
                 {
                     x = itemPadding;
                     y += itemHeight + itemPadding;
@@ -1491,13 +2014,13 @@ namespace NoFences
             }
 
             // 计算内容溢出高度（用于滚动条），确保不会出现负值
-            scrollHeight = Math.Max(0, scrollHeight - contentViewportHeight);
+            scrollHeight = Math.Max(0, scrollHeight - contentViewport.Height);
             scrollOffset = Math.Min(scrollOffset, scrollHeight);
 
             // 滚动条：仅在内容溢出时绘制
             if (scrollHeight > 0)
             {
-                int contentHeight = Math.Max(1, contentViewportHeight);
+                int contentHeight = Math.Max(1, contentViewport.Height);
                 int totalContentHeight = contentHeight + scrollHeight;
                 int proportionalHeight = (int)Math.Round(
                     contentHeight * (contentHeight / (double)totalContentHeight));
@@ -1505,24 +2028,23 @@ namespace NoFences
                     contentHeight,
                     Math.Max(LogicalPixelsToDevice(20), proportionalHeight));
                 int scrollbarTravel = contentHeight - scrollbarHeight;
-                int scrollbarY = titleHeight + (int)Math.Round(
+                int scrollbarY = contentViewport.Y + (int)Math.Round(
                     scrollOffset / (double)scrollHeight * scrollbarTravel);
+                int scrollbarX = Math.Max(contentViewport.X, contentViewport.Right - 5);
                 using (var scrollbarBrush = new SolidBrush(
                     ThemeDrawing.WithAlpha(theme.ScrollBarColor, 190)))
                 {
                     e.Graphics.FillRectangle(
                         scrollbarBrush,
-                        new Rectangle(Math.Max(0, Width - 5), scrollbarY, 5, scrollbarHeight));
+                        new Rectangle(scrollbarX, scrollbarY, 5, scrollbarHeight));
                 }
             }
 
-
-
-            //  单击/双击处理标志重置（这些标志在 Paint 周期中执行实际操作）
+            // 单击/双击处理标志重置（这些标志在 Paint 周期中执行实际操作）
             e.Graphics.Restore(contentState);
 
             if (isIconManagementMode)
-                DrawIconManagementFooter(e.Graphics, theme, managementFooterHeight);
+                DrawIconManagementFooter(e.Graphics, theme, contentViewport, managementFooterHeight);
 
             // 边框半径必须与实际的 DWM 或 Region 窗口轮廓一致。
             float borderRadius = GetWindowBorderRadius(theme);
@@ -1549,6 +2071,67 @@ namespace NoFences
             shouldUpdateSelection = false;
             hasSelectionUpdated = false;
             hasHoverUpdated = false;
+        }
+
+        /// <summary>按当前栅栏的标题栏位置（顶/底/左/右）与文本对齐方式（靠左/居中/靠右）绘制标题文字。</summary>
+        private void DrawTitleBarText(Graphics graphics, ThemeDefinition theme, Rectangle titleBounds)
+        {
+            if (titleBounds.Width <= 0 || titleBounds.Height <= 0 || string.IsNullOrEmpty(Text))
+                return;
+
+            StringAlignment primaryAlignment;
+            switch (CurrentTitleTextAlignment)
+            {
+                case FenceTitleTextAlignment.Left:
+                    primaryAlignment = StringAlignment.Near;
+                    break;
+                case FenceTitleTextAlignment.Right:
+                    primaryAlignment = StringAlignment.Far;
+                    break;
+                default:
+                    primaryAlignment = StringAlignment.Center;
+                    break;
+            }
+
+            int padding = LogicalPixelsToDevice(10);
+            using (var titleTextBrush = new SolidBrush(theme.TitleTextColor))
+            using (var titleFormat = new StringFormat
+            {
+                Alignment = primaryAlignment,
+                LineAlignment = StringAlignment.Center,
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap
+            })
+            {
+                RectangleF textRect;
+                if (IsVerticalTitleBar)
+                {
+                    titleFormat.FormatFlags |= StringFormatFlags.DirectionVertical;
+                    textRect = new RectangleF(
+                        titleBounds.X,
+                        titleBounds.Y + padding,
+                        titleBounds.Width,
+                        Math.Max(1, titleBounds.Height - padding * 2));
+                }
+                else
+                {
+                    textRect = new RectangleF(
+                        titleBounds.X + padding,
+                        titleBounds.Y,
+                        Math.Max(1, titleBounds.Width - padding * 2),
+                        titleBounds.Height);
+                }
+
+                var previousOffsetMode = graphics.PixelOffsetMode;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
+                graphics.DrawString(
+                    Text,
+                    titleFont,
+                    titleTextBrush,
+                    textRect,
+                    titleFormat);
+                graphics.PixelOffsetMode = previousOffsetMode;
+            }
         }
 
         /// <summary>
@@ -1985,24 +2568,29 @@ namespace NoFences
                 format);
         }
 
-        /// <summary>绘制图标管理模式右下角的确认、取消按钮和选择数量提示。</summary>
+        /// <summary>绘制图标管理模式底栏的确认、取消按钮和选择数量提示。</summary>
         private void DrawIconManagementFooter(
             Graphics graphics,
             ThemeDefinition theme,
+            Rectangle contentViewport,
             int footerHeight)
         {
-            if (footerHeight <= 0)
+            if (footerHeight <= 0 || contentViewport.Width <= 0)
                 return;
 
-            int footerTop = Math.Max(titleHeight, Height - footerHeight);
-            var footerBounds = new Rectangle(0, footerTop, Width, Height - footerTop);
+            int footerTop = contentViewport.Bottom;
+            var footerBounds = new Rectangle(
+                contentViewport.X,
+                footerTop,
+                contentViewport.Width,
+                footerHeight);
             using (var footerBrush = new SolidBrush(
                 ThemeDrawing.WithAlpha(theme.TitleBarColor, 220)))
             using (var separatorPen = new Pen(
                 ThemeDrawing.WithAlpha(theme.BorderColor, 145)))
             {
                 graphics.FillRectangle(footerBrush, footerBounds);
-                graphics.DrawLine(separatorPen, 0, footerTop, Width, footerTop);
+                graphics.DrawLine(separatorPen, footerBounds.Left, footerTop, footerBounds.Right, footerTop);
             }
 
             int margin = LogicalPixelsToDevice(7);
@@ -2010,7 +2598,7 @@ namespace NoFences
             int buttonHeight = Math.Min(
                 LogicalPixelsToDevice(30),
                 Math.Max(1, footerBounds.Height - margin * 2));
-            int availableWidth = Math.Max(2, Width - margin * 2 - gap);
+            int availableWidth = Math.Max(2, footerBounds.Width - margin * 2 - gap);
             int cancelWidth = Math.Max(
                 1,
                 Math.Min(LogicalPixelsToDevice(68), availableWidth / 2));
@@ -2022,12 +2610,12 @@ namespace NoFences
             int buttonTop = footerTop + (footerBounds.Height - buttonHeight) / 2;
 
             iconManagementCancelBounds = new Rectangle(
-                Math.Max(0, Width - margin - cancelWidth),
+                Math.Max(footerBounds.Left, footerBounds.Right - margin - cancelWidth),
                 buttonTop,
                 cancelWidth,
                 buttonHeight);
             iconManagementConfirmBounds = new Rectangle(
-                Math.Max(0, iconManagementCancelBounds.Left - gap - confirmWidth),
+                Math.Max(footerBounds.Left, iconManagementCancelBounds.Left - gap - confirmWidth),
                 buttonTop,
                 confirmWidth,
                 buttonHeight);
@@ -2051,16 +2639,17 @@ namespace NoFences
                 false,
                 theme);
 
+            int hintLeft = footerBounds.Left + margin;
             int hintRight = iconManagementConfirmBounds.Left - margin;
-            if (hintRight > margin)
+            if (hintRight > hintLeft)
             {
                 string hint = iconManagementSelection.Count > 0
                     ? ThemeText.SelectedItemCount(iconManagementSelection.Count)
                     : ThemeText.IconManagementHint;
                 var hintBounds = new Rectangle(
-                    margin,
+                    hintLeft,
                     footerTop,
-                    hintRight - margin,
+                    hintRight - hintLeft,
                     footerBounds.Height);
                 TextRenderer.DrawText(
                     graphics,
@@ -2323,10 +2912,24 @@ namespace NoFences
             ThemeManager.Instance.SetDarkMode(darkModeToolStripMenuItem.Checked);
         }
 
+        /// <summary>独立切换全局桌面分区移动自动吸附开关。</summary>
+        private void autoSnapToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            AppSettingsManager.Instance.SetAutoSnap(autoSnapToolStripMenuItem.Checked);
+        }
+
         /// <summary>窗口关闭：如果最后一个栅栏关闭则退出应用。</summary>
         private void FenceWindow_FormClosed(object sender, FormClosedEventArgs e)
         {
-            if (fenceRemoved)
+            StopMinifyAnimation();
+            if (minifyAnimationTimer != null)
+            {
+                minifyAnimationTimer.Tick -= MinifyAnimationTimer_Tick;
+                minifyAnimationTimer.Dispose();
+                minifyAnimationTimer = null;
+            }
+
+            if (fenceRemoved || !AppSettingsManager.Instance.AutoSaveEnabled)
             {
                 throttledMove.Cancel();
                 throttledResize.Cancel();
@@ -2340,6 +2943,7 @@ namespace NoFences
             throttledResize.Dispose();
 
             ThemeManager.Instance.ThemeChanged -= ThemeManager_ThemeChanged;
+            AppSettingsManager.Instance.SettingsChanged -= AppSettingsManager_SettingsChanged;
             thumbnailProvider.IconThumbnailLoaded -= ThumbnailProvider_IconThumbnailLoaded;
             thumbnailProvider.Dispose();
             iconMetricsPollTimer.Stop();
@@ -2404,10 +3008,14 @@ namespace NoFences
         /// <summary>窗口位置变化：节流保存新坐标（4 秒延迟）。</summary>
         private void FenceWindow_LocationChanged(object sender, EventArgs e)
         {
+            if (isUpdatingMinifyBounds || isAnimatingMinify)
+                return;
+
             throttledMove.Run(() =>
             {
-                fenceInfo.PosX = Location.X;
-                fenceInfo.PosY = Location.Y;
+                Rectangle expanded = GetCurrentExpandedBounds();
+                fenceInfo.PosX = expanded.X;
+                fenceInfo.PosY = expanded.Y;
                 Save();
             });
         }
@@ -2424,23 +3032,31 @@ namespace NoFences
 
         }
 
-        /// <summary>调整标题栏高度：弹出 HeightDialog 让用户选择。</summary>
+        /// <summary>打开标题设置对话框，配置标题栏位置、文本对齐方式与标题栏大小。</summary>
         private void titleSizeToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            var dialog = new HeightDialog(fenceInfo.TitleHeight);
-            if (dialog.ShowDialog(this) == DialogResult.OK)
+            using (var dialog = new HeightDialog(
+                fenceInfo.TitleHeight,
+                fenceInfo.TitlePosition,
+                fenceInfo.TitleTextAlignment))
             {
-                fenceInfo.TitleHeight = dialog.TitleHeight;
-                logicalTitleHeight = dialog.TitleHeight;
-                titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
-                ReloadFonts();
-                Minify();
-                if (isMinified)
+                if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
-                    Height = titleHeight;
+                    bool wasMinified = isMinified;
+                    if (wasMinified)
+                        ExpandFromMinified(animate: false);
+
+                    fenceInfo.TitleHeight = dialog.TitleHeight;
+                    fenceInfo.TitlePosition = dialog.TitlePosition;
+                    fenceInfo.TitleTextAlignment = dialog.TitleTextAlignment;
+                    logicalTitleHeight = dialog.TitleHeight;
+                    titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
+                    ReloadFonts();
+                    if (wasMinified || (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition)))
+                        Minify(animate: false);
+                    Refresh();
+                    Save();
                 }
-                Refresh();
-                Save();
             }
         }
 

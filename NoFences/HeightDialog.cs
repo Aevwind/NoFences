@@ -1,60 +1,996 @@
 using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using NoFences.Localization;
+using NoFences.Model;
 using NoFences.Theming;
+using NoFences.Win32;
 
 namespace NoFences
 {
     /// <summary>
-    /// 标题栏高度调整对话框。
-    /// 通过 TrackBar 滑块调整栅栏标题栏的高度（20~100px）。
+    /// 桌面分区标题设置对话框（原“标题尺寸”弹窗升级版）。
+    /// 支持配置：
+    /// 1. 标题栏位置（底部、顶部、左、右侧）—— 采用可视化缩略卡片选择；
+    /// 2. 标题文本对齐方式（靠左、居中、靠右）—— 采用现代圆角下拉弹出菜单选择；
+    /// 3. 标题栏大小（20~100px）—— 采用平滑滑块实时调节。
     /// </summary>
-    public partial class HeightDialog : ThemeAwareForm
+    public partial class HeightDialog : Form
     {
-        /// <summary>用户选择的标题栏高度（逻辑像素）</summary>
-        public int TitleHeight => trackBarTitleHeight.Value;
+        public const int DefaultTitleHeight = 35;
+        public const int MinTitleHeight = 20;
+        public const int MaxTitleHeight = 100;
 
-        public HeightDialog(int val)
+        private SettingsPalette palette;
+        private FenceTitlePosition selectedPosition;
+        private FenceTitleTextAlignment selectedAlignment;
+        private int selectedHeight;
+
+        private int hoveredCardIndex = -1;
+        private bool isAlignDropdownHovered;
+        private bool isSliderHovered;
+        private bool isSliderDragging;
+
+        private Rectangle[] cardHitRects = new Rectangle[4];
+        private Rectangle alignDropdownRect;
+        private Rectangle sliderTrackRect;
+
+        private readonly SettingsActionButton btnRestore;
+        private readonly SettingsActionButton btnOk;
+        private readonly SettingsActionButton btnCancel;
+        private ToolStripDropDown alignmentPopup;
+
+        /// <summary>用户选择的标题栏大小（逻辑像素，20~100）。</summary>
+        public int TitleHeight => selectedHeight;
+
+        /// <summary>用户选择的标题栏位置（顶部/底部/左/右侧）。</summary>
+        public FenceTitlePosition TitlePosition => selectedPosition;
+
+        /// <summary>用户选择的标题文本对齐方式（靠左/居中/靠右）。</summary>
+        public FenceTitleTextAlignment TitleTextAlignment => selectedAlignment;
+
+        public HeightDialog(
+            int initialHeight,
+            FenceTitlePosition initialPosition = FenceTitlePosition.Top,
+            FenceTitleTextAlignment initialAlignment = FenceTitleTextAlignment.Center)
         {
             InitializeComponent();
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.UserPaint,
+                true);
+
+            selectedHeight = ClampHeight(initialHeight);
+            selectedPosition = initialPosition;
+            selectedAlignment = initialAlignment;
+
+            btnRestore = new SettingsActionButton { IsPrimary = false };
+            btnOk = new SettingsActionButton { IsPrimary = true };
+            btnCancel = new SettingsActionButton { IsPrimary = false };
+
+            btnRestore.Click += BtnRestore_Click;
+            btnOk.Click += (s, e) =>
+            {
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            btnCancel.Click += (s, e) =>
+            {
+                DialogResult = DialogResult.Cancel;
+                Close();
+            };
+
+            Controls.Add(btnRestore);
+            Controls.Add(btnOk);
+            Controls.Add(btnCancel);
+
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+
+            UpdateDialogLayout();
             ApplyLocalization();
-            trackBarTitleHeight.Value = Math.Max(
-                trackBarTitleHeight.Minimum,
-                Math.Min(trackBarTitleHeight.Maximum, val));
-            UpdateText();
+            ApplyCurrentPalette();
+            ThemeManager.Instance.ThemeChanged += ThemeManager_ThemeChanged;
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            UpdateDialogLayout();
+            ApplyCurrentPalette();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            UpdateDialogLayout();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            ThemeManager.Instance.ThemeChanged -= ThemeManager_ThemeChanged;
+            alignmentPopup?.Dispose();
+            alignmentPopup = null;
+            base.OnFormClosed(e);
+        }
+
+        private void ThemeManager_ThemeChanged(object sender, EventArgs e)
+        {
+            if (IsDisposed || Disposing)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(ApplyCurrentPalette));
+                return;
+            }
+            ApplyCurrentPalette();
+        }
+
+        private void ApplyLocalization()
+        {
+            Text = ThemeText.Key(LKeys.HeightDialogTitle);
+            btnRestore.Text = ThemeText.Key(LKeys.HeightDialogRestoreDefault);
+            btnOk.Text = ThemeText.Ok;
+            btnCancel.Text = ThemeText.Cancel;
+        }
+
+        private void ApplyCurrentPalette()
+        {
+            bool darkMode = ThemeManager.Instance.DarkModeEnabled;
+            palette = SettingsPalette.FromColorMode(darkMode);
+            BackColor = palette.CardBackground;
+            ForeColor = palette.PrimaryText;
+
+            btnRestore.ApplyPalette(palette);
+            btnOk.ApplyPalette(palette);
+            btnCancel.ApplyPalette(palette);
+
+            if (IsHandleCreated)
+            {
+                WindowUtil.TrySetImmersiveDarkMode(Handle, darkMode);
+            }
+
+            Invalidate(true);
+        }
+
+        private float GetDpiScale()
+        {
+            return DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+        }
+
+        private int S(int logicalPixels)
+        {
+            return (int)Math.Round(logicalPixels * GetDpiScale(), MidpointRounding.AwayFromZero);
+        }
+
+        private void UpdateDialogLayout()
+        {
+            if (btnRestore == null || btnOk == null || btnCancel == null)
+                return;
+
+            int targetClientW = S(556);
+            int targetClientH = S(368);
+            if (ClientSize.Width != targetClientW || ClientSize.Height != targetClientH)
+            {
+                ClientSize = new Size(targetClientW, targetClientH);
+            }
+
+            int padH = S(24);
+            int cardTop = S(64);
+            int cardW = S(104);
+            int cardH = S(68);
+            int cardGap = S(16);
+
+            for (int i = 0; i < 4; i++)
+            {
+                int cx = padH + i * (cardW + cardGap);
+                cardHitRects[i] = new Rectangle(cx - S(4), cardTop - S(4), cardW + S(8), cardH + S(32));
+            }
+
+            int row2Top = S(178);
+            int row2Height = S(64);
+            int dropdownW = S(132);
+            int dropdownH = S(34);
+            alignDropdownRect = new Rectangle(
+                ClientSize.Width - padH - dropdownW,
+                row2Top + (row2Height - dropdownH) / 2,
+                dropdownW,
+                dropdownH);
+
+            int row3Top = S(242);
+            int row3Height = S(64);
+            int valueLabelW = S(46);
+            int sliderW = S(190);
+            int sliderH = S(28);
+            sliderTrackRect = new Rectangle(
+                ClientSize.Width - padH - valueLabelW - S(8) - sliderW,
+                row3Top + (row3Height - sliderH) / 2,
+                sliderW,
+                sliderH);
+
+            int footerTop = S(308);
+            int footerH = ClientSize.Height - footerTop;
+            int btnH = S(34);
+            int btnY = footerTop + (footerH - btnH) / 2;
+            int restoreW = S(104);
+            int actionW = S(82);
+            int btnGap = S(10);
+
+            btnRestore.Bounds = new Rectangle(padH, btnY, restoreW, btnH);
+            btnCancel.Bounds = new Rectangle(ClientSize.Width - padH - actionW, btnY, actionW, btnH);
+            btnOk.Bounds = new Rectangle(btnCancel.Left - btnGap - actionW, btnY, actionW, btnH);
+        }
+
+        private static FenceTitlePosition GetCardPosition(int index)
+        {
+            switch (index)
+            {
+                case 0:
+                    return FenceTitlePosition.Bottom;
+                case 1:
+                    return FenceTitlePosition.Top;
+                case 2:
+                    return FenceTitlePosition.Left;
+                default:
+                    return FenceTitlePosition.Right;
+            }
+        }
+
+        private static string GetCardLabel(FenceTitlePosition position)
+        {
+            switch (position)
+            {
+                case FenceTitlePosition.Bottom:
+                    return ThemeText.Key(LKeys.TitleSettingsPosBottom);
+                case FenceTitlePosition.Top:
+                    return ThemeText.Key(LKeys.TitleSettingsPosTop);
+                case FenceTitlePosition.Left:
+                    return ThemeText.Key(LKeys.TitleSettingsPosLeft);
+                default:
+                    return ThemeText.Key(LKeys.TitleSettingsPosRight);
+            }
+        }
+
+        private static string GetAlignmentLabel(FenceTitleTextAlignment alignment)
+        {
+            switch (alignment)
+            {
+                case FenceTitleTextAlignment.Left:
+                    return ThemeText.Key(LKeys.TitleSettingsAlignLeft);
+                case FenceTitleTextAlignment.Right:
+                    return ThemeText.Key(LKeys.TitleSettingsAlignRight);
+                default:
+                    return ThemeText.Key(LKeys.TitleSettingsAlignCenter);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            g.Clear(palette.CardBackground);
+
+            int padH = S(24);
+            int contentW = ClientSize.Width - padH * 2;
+
+            using (var titleFont = new Font("Microsoft YaHei UI", 9.75f, FontStyle.Regular))
+            using (var descFont = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular))
+            using (var labelFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular))
+            using (var valueFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold))
+            using (var divPen = new Pen(palette.DividerColor, 1f))
+            {
+                // =========================================================
+                // 1. 标题栏位置区域（参考图顶部卡片组）
+                // =========================================================
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsPositionTitle),
+                    titleFont,
+                    new Rectangle(padH, S(16), contentW, S(22)),
+                    palette.PrimaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsPositionDesc),
+                    descFont,
+                    new Rectangle(padH, S(38), contentW, S(20)),
+                    palette.SecondaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                int cardTop = S(66);
+                int cardW = S(104);
+                int cardH = S(68);
+                int cardGap = S(16);
+
+                for (int i = 0; i < 4; i++)
+                {
+                    FenceTitlePosition pos = GetCardPosition(i);
+                    int cx = padH + i * (cardW + cardGap);
+                    var thumbRect = new RectangleF(cx, cardTop, cardW, cardH);
+                    bool isSelected = selectedPosition == pos;
+                    bool isHovered = hoveredCardIndex == i;
+
+                    DrawPositionPreviewCard(g, thumbRect, pos, isSelected, isHovered);
+
+                    var labelRect = new Rectangle(cx, cardTop + cardH + S(8), cardW + S(8), S(22));
+                    TextRenderer.DrawText(
+                        g,
+                        GetCardLabel(pos),
+                        labelFont,
+                        labelRect,
+                        palette.PrimaryText,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                }
+
+                int div1Y = S(176);
+                g.DrawLine(divPen, 0, div1Y, ClientSize.Width, div1Y);
+
+                // =========================================================
+                // 2. 标题文本对齐区域（参考图中部下拉选择行）
+                // =========================================================
+                int row2Top = div1Y + 1;
+                int row2TextW = Math.Max(100, alignDropdownRect.Left - padH - S(16));
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsAlignTitle),
+                    titleFont,
+                    new Rectangle(padH, row2Top + S(12), row2TextW, S(22)),
+                    palette.PrimaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsAlignDesc),
+                    descFont,
+                    new Rectangle(padH, row2Top + S(34), row2TextW, S(20)),
+                    palette.SecondaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                DrawAlignmentDropdown(g, alignDropdownRect, labelFont);
+
+                int div2Y = S(241);
+                g.DrawLine(divPen, 0, div2Y, ClientSize.Width, div2Y);
+
+                // =========================================================
+                // 3. 标题栏大小区域（滑块 + px 数值显示）
+                // =========================================================
+                int row3Top = div2Y + 1;
+                int row3TextW = Math.Max(100, sliderTrackRect.Left - padH - S(16));
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsSizeTitle),
+                    titleFont,
+                    new Rectangle(padH, row3Top + S(12), row3TextW, S(22)),
+                    palette.PrimaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsSizeDesc),
+                    descFont,
+                    new Rectangle(padH, row3Top + S(34), row3TextW, S(20)),
+                    palette.SecondaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                DrawSizeSlider(g, sliderTrackRect);
+
+                var valRect = new Rectangle(
+                    sliderTrackRect.Right + S(6),
+                    row3Top,
+                    ClientSize.Width - padH - (sliderTrackRect.Right + S(6)),
+                    S(64));
+                TextRenderer.DrawText(
+                    g,
+                    selectedHeight + "px",
+                    valueFont,
+                    valRect,
+                    palette.PrimaryText,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                // =========================================================
+                // 4. 底部操作栏分隔线与背景
+                // =========================================================
+                int footerTop = S(307);
+                using (var footerBrush = new SolidBrush(palette.ContentBackground))
+                {
+                    g.FillRectangle(footerBrush, 0, footerTop, ClientSize.Width, ClientSize.Height - footerTop);
+                }
+                g.DrawLine(divPen, 0, footerTop, ClientSize.Width, footerTop);
+            }
         }
 
         /// <summary>
-        /// 本地化对话框控件文本，确保单文件独立运行时界面语言一致。
+        /// 绘制参考图风格的标题栏位置缩略预览图（含蓝色壁纸花瓣层次、四向标题栏条带与 5 个圆点指示器）。
         /// </summary>
-        private void ApplyLocalization()
+        private void DrawPositionPreviewCard(
+            Graphics g,
+            RectangleF thumbRect,
+            FenceTitlePosition position,
+            bool isSelected,
+            bool isHovered)
         {
-            Text = ThemeText.Get("修改标题高度", "Change title height");
-            btnOk.Text = ThemeText.Get("确定", "OK");
-            btnCancel.Text = ThemeText.Get("取消", "Cancel");
-            btnRestore.Text = ThemeText.Get("恢复默认值", "Restore default");
+            float scale = GetDpiScale();
+            float outerPad = 3.5f * scale;
+            float thumbRadius = 5f * scale;
+
+            // 选中态或悬停态外框（参考图中的圆角双层外框效果）
+            if (isSelected || isHovered)
+            {
+                var outerRect = new RectangleF(
+                    thumbRect.X - outerPad,
+                    thumbRect.Y - outerPad,
+                    thumbRect.Width + outerPad * 2f,
+                    thumbRect.Height + outerPad * 2f);
+                Color ringColor = isSelected
+                    ? palette.AccentBlue
+                    : ThemeDrawing.WithAlpha(palette.SecondaryText, 110);
+                float ringWidth = isSelected ? Math.Max(1.8f, 2f * scale) : 1.2f * scale;
+                using (var outerPath = ThemeDrawing.CreateRoundedRectangle(outerRect, thumbRadius + outerPad * 0.8f))
+                using (var ringPen = new Pen(ringColor, ringWidth))
+                {
+                    g.DrawPath(ringPen, outerPath);
+                }
+            }
+
+            using (var clipPath = ThemeDrawing.CreateRoundedRectangle(thumbRect, thumbRadius))
+            {
+                var state = g.Save();
+                g.SetClip(clipPath, CombineMode.Intersect);
+
+                // 1. 桌面浅蓝渐变底色
+                using (var skyBrush = new LinearGradientBrush(
+                    thumbRect,
+                    Color.FromArgb(148, 189, 232),
+                    Color.FromArgb(208, 226, 245),
+                    90f))
+                {
+                    g.FillRectangle(skyBrush, thumbRect);
+                }
+
+                // 2. 绘制立体蓝色花瓣层次（模拟参考图中的 Win11 Bloom 壁纸视觉效果）
+                DrawBloomWallpaperMotif(g, thumbRect);
+
+                // 3. 绘制对应方向的浅色标题栏条带与 5 个圆点
+                float barThickness = Math.Max(11f, 13f * scale);
+                RectangleF barRect;
+                bool verticalBar = position == FenceTitlePosition.Left || position == FenceTitlePosition.Right;
+
+                switch (position)
+                {
+                    case FenceTitlePosition.Bottom:
+                        barRect = new RectangleF(thumbRect.X, thumbRect.Bottom - barThickness, thumbRect.Width, barThickness);
+                        break;
+                    case FenceTitlePosition.Top:
+                        barRect = new RectangleF(thumbRect.X, thumbRect.Y, thumbRect.Width, barThickness);
+                        break;
+                    case FenceTitlePosition.Left:
+                        barRect = new RectangleF(thumbRect.X, thumbRect.Y, barThickness, thumbRect.Height);
+                        break;
+                    default:
+                        barRect = new RectangleF(thumbRect.Right - barThickness, thumbRect.Y, barThickness, thumbRect.Height);
+                        break;
+                }
+
+                using (var barBrush = new SolidBrush(Color.FromArgb(232, 224, 233, 246)))
+                using (var barLinePen = new Pen(Color.FromArgb(140, 160, 178, 204), 1f))
+                {
+                    g.FillRectangle(barBrush, barRect);
+                    if (position == FenceTitlePosition.Bottom)
+                        g.DrawLine(barLinePen, barRect.Left, barRect.Top, barRect.Right, barRect.Top);
+                    else if (position == FenceTitlePosition.Top)
+                        g.DrawLine(barLinePen, barRect.Left, barRect.Bottom, barRect.Right, barRect.Bottom);
+                    else if (position == FenceTitlePosition.Left)
+                        g.DrawLine(barLinePen, barRect.Right, barRect.Top, barRect.Right, barRect.Bottom);
+                    else
+                        g.DrawLine(barLinePen, barRect.Left, barRect.Top, barRect.Left, barRect.Bottom);
+                }
+
+                // 5 个圆点指示器
+                float dotSize = Math.Max(3.5f, 4.2f * scale);
+                float dotGap = Math.Max(2.2f, 2.8f * scale);
+                float totalSpan = 5 * dotSize + 4 * dotGap;
+                using (var dotBrush = new SolidBrush(Color.FromArgb(118, 124, 136)))
+                {
+                    if (!verticalBar)
+                    {
+                        float startX = barRect.X + (barRect.Width - totalSpan) / 2f;
+                        float dotY = barRect.Y + (barRect.Height - dotSize) / 2f;
+                        for (int d = 0; d < 5; d++)
+                        {
+                            g.FillEllipse(dotBrush, startX + d * (dotSize + dotGap), dotY, dotSize, dotSize);
+                        }
+                    }
+                    else
+                    {
+                        float dotX = barRect.X + (barRect.Width - dotSize) / 2f;
+                        float startY = barRect.Y + (barRect.Height - totalSpan) / 2f;
+                        for (int d = 0; d < 5; d++)
+                        {
+                            g.FillEllipse(dotBrush, dotX, startY + d * (dotSize + dotGap), dotSize, dotSize);
+                        }
+                    }
+                }
+
+                g.Restore(state);
+
+                // 缩略图内边框
+                using (var borderPen = new Pen(Color.FromArgb(135, 145, 158, 176), 1f))
+                {
+                    g.DrawPath(borderPen, clipPath);
+                }
+            }
         }
 
-        /// <summary>更新显示文本为当前值 + "px"。</summary>
-        private void UpdateText()
+        /// <summary>在位置预览卡片中绘制多层蓝色立体弧面，还原参考图中的壁纸缩略视觉。</summary>
+        private static void DrawBloomWallpaperMotif(Graphics g, RectangleF r)
         {
-            labelTitleHeight.Text = trackBarTitleHeight.Value + "px";
+            float cx = r.X + r.Width * 0.52f;
+            float cy = r.Y + r.Height * 0.62f;
+            float w = r.Width;
+            float h = r.Height;
+
+            var outerPetal = new RectangleF(cx - w * 0.36f, cy - h * 0.46f, w * 0.72f, h * 0.88f);
+            using (var b1 = new LinearGradientBrush(
+                outerPetal,
+                Color.FromArgb(16, 98, 214),
+                Color.FromArgb(8, 46, 128),
+                45f))
+            {
+                g.FillEllipse(b1, outerPetal);
+            }
+
+            var leftPetal = new RectangleF(cx - w * 0.40f, cy - h * 0.26f, w * 0.50f, h * 0.66f);
+            using (var b2 = new LinearGradientBrush(
+                leftPetal,
+                Color.FromArgb(54, 154, 248),
+                Color.FromArgb(15, 78, 186),
+                30f))
+            {
+                g.FillEllipse(b2, leftPetal);
+            }
+
+            var rightPetal = new RectangleF(cx - w * 0.08f, cy - h * 0.34f, w * 0.46f, h * 0.68f);
+            using (var b3 = new LinearGradientBrush(
+                rightPetal,
+                Color.FromArgb(78, 176, 255),
+                Color.FromArgb(20, 88, 198),
+                120f))
+            {
+                g.FillEllipse(b3, rightPetal);
+            }
+
+            var centerCore = new RectangleF(cx - w * 0.20f, cy - h * 0.18f, w * 0.40f, h * 0.48f);
+            using (var b4 = new LinearGradientBrush(
+                centerCore,
+                Color.FromArgb(120, 206, 255),
+                Color.FromArgb(28, 110, 225),
+                75f))
+            {
+                g.FillEllipse(b4, centerCore);
+            }
         }
 
-        private void trackBarTitleHeight_Scroll(object sender, EventArgs e)
+        private void DrawAlignmentDropdown(Graphics g, Rectangle bounds, Font font)
         {
-            UpdateText();
+            float scale = GetDpiScale();
+            float radius = 6f * scale;
+            var rect = new RectangleF(bounds.X + 0.5f, bounds.Y + 0.5f, bounds.Width - 1f, bounds.Height - 1f);
+
+            Color fillColor = isAlignDropdownHovered
+                ? palette.ControlHoverBackground
+                : palette.ControlBackground;
+            Color borderColor = isAlignDropdownHovered
+                ? ThemeDrawing.Mix(palette.ControlBorder, palette.PrimaryText, 0.22f)
+                : palette.ControlBorder;
+
+            using (var path = ThemeDrawing.CreateRoundedRectangle(rect, radius))
+            using (var fillBrush = new SolidBrush(fillColor))
+            using (var borderPen = new Pen(borderColor, 1f))
+            {
+                g.FillPath(fillBrush, path);
+                g.DrawPath(borderPen, path);
+            }
+
+            int padLeft = S(12);
+            int arrowSpace = S(28);
+            var textRect = new Rectangle(bounds.X + padLeft, bounds.Y, bounds.Width - padLeft - arrowSpace, bounds.Height);
+            TextRenderer.DrawText(
+                g,
+                GetAlignmentLabel(selectedAlignment),
+                font,
+                textRect,
+                palette.PrimaryText,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+            // 右侧下拉 V 型箭头
+            float arrowCx = bounds.Right - S(15);
+            float arrowCy = bounds.Y + bounds.Height / 2f;
+            float aw = 4f * scale;
+            float ah = 2.4f * scale;
+            using (var arrowPen = new Pen(palette.SecondaryText, Math.Max(1.3f, 1.5f * scale))
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            })
+            {
+                g.DrawLines(arrowPen, new[]
+                {
+                    new PointF(arrowCx - aw, arrowCy - ah * 0.5f),
+                    new PointF(arrowCx, arrowCy + ah),
+                    new PointF(arrowCx + aw, arrowCy - ah * 0.5f)
+                });
+            }
         }
 
-        /// <summary>恢复默认高度 35px。</summary>
-        private void btnRestore_Click(object sender, EventArgs e)
+        private void DrawSizeSlider(Graphics g, Rectangle bounds)
         {
-            trackBarTitleHeight.Value = 35;
-            UpdateText();
+            float scale = GetDpiScale();
+            float trackH = Math.Max(4f, 4.5f * scale);
+            float thumbR = Math.Max(7f, 8f * scale);
+            float trackLeft = bounds.X + thumbR;
+            float trackRight = bounds.Right - thumbR;
+            float trackW = Math.Max(10f, trackRight - trackLeft);
+            float cy = bounds.Y + bounds.Height / 2f;
+
+            float ratio = (selectedHeight - MinTitleHeight) / (float)(MaxTitleHeight - MinTitleHeight);
+            ratio = Math.Max(0f, Math.Min(1f, ratio));
+            float thumbCx = trackLeft + trackW * ratio;
+
+            var fullTrack = new RectangleF(trackLeft, cy - trackH / 2f, trackW, trackH);
+            using (var trackPath = ThemeDrawing.CreateRoundedRectangle(fullTrack, trackH / 2f))
+            using (var trackBrush = new SolidBrush(palette.SwitchOffTrack))
+            {
+                g.FillPath(trackBrush, trackPath);
+            }
+
+            if (thumbCx > trackLeft + 1f)
+            {
+                var activeTrack = new RectangleF(trackLeft, cy - trackH / 2f, thumbCx - trackLeft, trackH);
+                using (var activePath = ThemeDrawing.CreateRoundedRectangle(activeTrack, trackH / 2f))
+                using (var activeBrush = new SolidBrush(palette.AccentBlue))
+                {
+                    g.FillPath(activeBrush, activePath);
+                }
+            }
+
+            var thumbRect = new RectangleF(thumbCx - thumbR, cy - thumbR, thumbR * 2f, thumbR * 2f);
+            using (var shadowBrush = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
+            using (var outerBrush = new SolidBrush(Color.White))
+            using (var outerPen = new Pen(palette.ControlBorder, 1f))
+            using (var innerBrush = new SolidBrush(isSliderDragging ? palette.AccentPressedBlue : palette.AccentBlue))
+            {
+                g.FillEllipse(shadowBrush, thumbRect.X, thumbRect.Y + 1f, thumbRect.Width, thumbRect.Height);
+                g.FillEllipse(outerBrush, thumbRect);
+                g.DrawEllipse(outerPen, thumbRect);
+
+                float innerR = thumbR * (isSliderHovered || isSliderDragging ? 0.58f : 0.48f);
+                g.FillEllipse(innerBrush, thumbCx - innerR, cy - innerR, innerR * 2f, innerR * 2f);
+            }
         }
 
-        private void HeightDialog_Load(object sender, EventArgs e)
+        private void ShowAlignmentPopup()
         {
+            alignmentPopup?.Dispose();
 
+            var menuControl = new AlignmentFlyoutMenuControl(
+                palette,
+                selectedAlignment,
+                GetDpiScale(),
+                chosen =>
+                {
+                    selectedAlignment = chosen;
+                    alignmentPopup?.Close();
+                    Invalidate();
+                });
+
+            var host = new ToolStripControlHost(menuControl)
+            {
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                AutoSize = false,
+                Size = menuControl.Size
+            };
+
+            alignmentPopup = new ToolStripDropDown
+            {
+                AutoSize = true,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                DropShadowEnabled = true,
+                BackColor = palette.CardBackground
+            };
+            alignmentPopup.Items.Add(host);
+            alignmentPopup.Show(this, new Point(alignDropdownRect.Left, alignDropdownRect.Top - S(4)));
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+
+            if (isSliderDragging)
+            {
+                UpdateSliderValueFromMouse(e.X);
+                return;
+            }
+
+            int hitCard = -1;
+            for (int i = 0; i < 4; i++)
+            {
+                if (cardHitRects[i].Contains(e.Location))
+                {
+                    hitCard = i;
+                    break;
+                }
+            }
+
+            bool hitDropdown = alignDropdownRect.Contains(e.Location);
+            bool hitSlider = sliderTrackRect.Contains(e.Location);
+
+            if (hitCard != hoveredCardIndex ||
+                hitDropdown != isAlignDropdownHovered ||
+                hitSlider != isSliderHovered)
+            {
+                hoveredCardIndex = hitCard;
+                isAlignDropdownHovered = hitDropdown;
+                isSliderHovered = hitSlider;
+                Cursor = (hitCard >= 0 || hitDropdown || hitSlider) ? Cursors.Hand : Cursors.Default;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (!isSliderDragging)
+            {
+                hoveredCardIndex = -1;
+                isAlignDropdownHovered = false;
+                isSliderHovered = false;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left)
+                return;
+
+            for (int i = 0; i < 4; i++)
+            {
+                if (cardHitRects[i].Contains(e.Location))
+                {
+                    selectedPosition = GetCardPosition(i);
+                    Invalidate();
+                    return;
+                }
+            }
+
+            if (alignDropdownRect.Contains(e.Location))
+            {
+                ShowAlignmentPopup();
+                return;
+            }
+
+            if (sliderTrackRect.Contains(e.Location))
+            {
+                isSliderDragging = true;
+                Capture = true;
+                UpdateSliderValueFromMouse(e.X);
+            }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (isSliderDragging)
+            {
+                isSliderDragging = false;
+                Capture = false;
+                Invalidate();
+            }
+        }
+
+        private void UpdateSliderValueFromMouse(int mouseX)
+        {
+            float scale = GetDpiScale();
+            float thumbR = Math.Max(7f, 8f * scale);
+            float trackLeft = sliderTrackRect.X + thumbR;
+            float trackRight = sliderTrackRect.Right - thumbR;
+            float trackW = Math.Max(1f, trackRight - trackLeft);
+
+            float ratio = (mouseX - trackLeft) / trackW;
+            ratio = Math.Max(0f, Math.Min(1f, ratio));
+            int nextValue = ClampHeight((int)Math.Round(MinTitleHeight + ratio * (MaxTitleHeight - MinTitleHeight)));
+            if (nextValue != selectedHeight)
+            {
+                selectedHeight = nextValue;
+                Invalidate();
+            }
+        }
+
+        private void BtnRestore_Click(object sender, EventArgs e)
+        {
+            selectedPosition = FenceTitlePosition.Top;
+            selectedAlignment = FenceTitleTextAlignment.Center;
+            selectedHeight = DefaultTitleHeight;
+            Invalidate();
+        }
+
+        public static int ClampHeight(int value)
+        {
+            if (value < MinTitleHeight)
+                return MinTitleHeight;
+            if (value > MaxTitleHeight)
+                return MaxTitleHeight;
+            return value;
+        }
+
+        /// <summary>
+        /// 还原参考图中带有左侧胶囊指示条的现代圆角弹出下拉列表（靠左 / 居中 / 靠右）。
+        /// </summary>
+        private sealed class AlignmentFlyoutMenuControl : Control
+        {
+            private readonly SettingsPalette palette;
+            private readonly FenceTitleTextAlignment currentSelection;
+            private readonly float scale;
+            private readonly Action<FenceTitleTextAlignment> onSelect;
+            private readonly FenceTitleTextAlignment[] options =
+            {
+                FenceTitleTextAlignment.Left,
+                FenceTitleTextAlignment.Center,
+                FenceTitleTextAlignment.Right
+            };
+            private int hoveredIndex = -1;
+
+            public AlignmentFlyoutMenuControl(
+                SettingsPalette palette,
+                FenceTitleTextAlignment currentSelection,
+                float scale,
+                Action<FenceTitleTextAlignment> onSelect)
+            {
+                this.palette = palette ?? SettingsPalette.CreateDark();
+                this.currentSelection = currentSelection;
+                this.scale = Math.Max(1f, scale);
+                this.onSelect = onSelect;
+
+                SetStyle(
+                    ControlStyles.AllPaintingInWmPaint |
+                    ControlStyles.OptimizedDoubleBuffer |
+                    ControlStyles.ResizeRedraw |
+                    ControlStyles.UserPaint,
+                    true);
+
+                int width = (int)Math.Round(136 * this.scale);
+                int itemH = (int)Math.Round(36 * this.scale);
+                int padV = (int)Math.Round(6 * this.scale);
+                Size = new Size(width, options.Length * itemH + padV * 2);
+                Cursor = Cursors.Hand;
+            }
+
+            protected override void OnMouseMove(MouseEventArgs e)
+            {
+                base.OnMouseMove(e);
+                int hit = HitTestItem(e.Location);
+                if (hit != hoveredIndex)
+                {
+                    hoveredIndex = hit;
+                    Invalidate();
+                }
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                base.OnMouseLeave(e);
+                hoveredIndex = -1;
+                Invalidate();
+            }
+
+            protected override void OnMouseClick(MouseEventArgs e)
+            {
+                base.OnMouseClick(e);
+                if (e.Button != MouseButtons.Left)
+                    return;
+
+                int hit = HitTestItem(e.Location);
+                if (hit >= 0 && hit < options.Length)
+                {
+                    onSelect?.Invoke(options[hit]);
+                }
+            }
+
+            private Rectangle GetItemBounds(int index)
+            {
+                int padH = (int)Math.Round(6 * scale);
+                int padV = (int)Math.Round(6 * scale);
+                int itemH = (int)Math.Round(36 * scale);
+                return new Rectangle(padH, padV + index * itemH, Width - padH * 2, itemH - (int)Math.Round(2 * scale));
+            }
+
+            private int HitTestItem(Point pt)
+            {
+                for (int i = 0; i < options.Length; i++)
+                {
+                    if (GetItemBounds(i).Contains(pt))
+                        return i;
+                }
+                return -1;
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                Graphics g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                g.Clear(palette.CardBackground);
+
+                var outerRect = new RectangleF(0.5f, 0.5f, Width - 1f, Height - 1f);
+                using (var outerPath = ThemeDrawing.CreateRoundedRectangle(outerRect, 8f * scale))
+                using (var bgBrush = new SolidBrush(palette.CardBackground))
+                using (var borderPen = new Pen(palette.ControlBorder, 1f))
+                using (var font = new Font("Microsoft YaHei UI", 9.25f, FontStyle.Regular))
+                {
+                    g.FillPath(bgBrush, outerPath);
+
+                    for (int i = 0; i < options.Length; i++)
+                    {
+                        FenceTitleTextAlignment opt = options[i];
+                        Rectangle itemRect = GetItemBounds(i);
+                        bool isSelected = opt == currentSelection;
+                        bool isHovered = i == hoveredIndex;
+
+                        if (isSelected || isHovered)
+                        {
+                            Color highlight = isHovered
+                                ? palette.ControlHoverBackground
+                                : ThemeDrawing.Mix(palette.CardBackground, palette.ControlHoverBackground, 0.65f);
+                            using (var itemPath = ThemeDrawing.CreateRoundedRectangle(itemRect, 5f * scale))
+                            using (var itemBrush = new SolidBrush(highlight))
+                            {
+                                g.FillPath(itemBrush, itemPath);
+                            }
+                        }
+
+                        if (isSelected)
+                        {
+                            // 左侧竖向高亮条（还原参考图中“靠左”左侧的竖条指示器）
+                            float pillW = Math.Max(3f, 3.2f * scale);
+                            float pillH = Math.Max(12f, 15f * scale);
+                            var pillRect = new RectangleF(
+                                itemRect.X + 4f * scale,
+                                itemRect.Y + (itemRect.Height - pillH) / 2f,
+                                pillW,
+                                pillH);
+                            using (var pillPath = ThemeDrawing.CreateRoundedRectangle(pillRect, pillW / 2f))
+                            using (var pillBrush = new SolidBrush(palette.AccentBlue))
+                            {
+                                g.FillPath(pillBrush, pillPath);
+                            }
+                        }
+
+                        int textLeft = itemRect.X + (int)Math.Round(14 * scale);
+                        var textRect = new Rectangle(textLeft, itemRect.Y, itemRect.Width - (int)Math.Round(18 * scale), itemRect.Height);
+                        TextRenderer.DrawText(
+                            g,
+                            GetAlignmentLabel(opt),
+                            font,
+                            textRect,
+                            palette.PrimaryText,
+                            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                    }
+
+                    g.DrawPath(borderPen, outerPath);
+                }
+            }
         }
     }
 }

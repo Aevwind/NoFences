@@ -421,7 +421,11 @@ namespace NoFences.Theming
 
         protected virtual void ApplyApplicationTheme(ThemeDefinition theme)
         {
-            ThemeUi.ApplyToForm(this, theme);
+            bool darkMode = ThemeManager.Instance.DarkModeEnabled;
+            ThemeDefinition dialogTheme = SettingsPalette
+                .FromColorMode(darkMode)
+                .ToControlThemeDefinition();
+            ThemeUi.ApplyToForm(this, dialogTheme, darkMode);
         }
 
         protected override void Dispose(bool disposing)

@@ -40,6 +40,7 @@ namespace NoFences
             this.scaleToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.themeToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.darkModeToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.autoSnapToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.toolStripSeparator1 = new System.Windows.Forms.ToolStripSeparator();
             this.newFenceToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.exitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -52,19 +53,20 @@ namespace NoFences
             // 
             resources.ApplyResources(this.appContextMenu, "appContextMenu");
             this.appContextMenu.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.iconManagementToolStripMenuItem,
             this.deleteItemToolStripMenuItem,
             this.lockedToolStripMenuItem,
             this.minifyToolStripMenuItem,
             this.renameToolStripMenuItem,
-            this.titleSizeToolStripMenuItem,
             this.scaleToolStripMenuItem,
-            this.themeToolStripMenuItem,
-            this.darkModeToolStripMenuItem,
+            this.titleSizeToolStripMenuItem,
+            this.iconManagementToolStripMenuItem,
             this.toolStripSeparator1,
+            this.darkModeToolStripMenuItem,
+            this.autoSnapToolStripMenuItem,
+            this.themeToolStripMenuItem,
+            this.toolStripSeparator2,
             this.newFenceToolStripMenuItem,
             this.exitToolStripMenuItem,
-            this.toolStripSeparator2,
             this.quitApplicationToolStripMenuItem});
             this.appContextMenu.Name = "contextMenuStrip1";
             this.appContextMenu.RenderMode = System.Windows.Forms.ToolStripRenderMode.Professional;
@@ -73,7 +75,7 @@ namespace NoFences
             // iconManagementToolStripMenuItem
             //
             this.iconManagementToolStripMenuItem.Name = "iconManagementToolStripMenuItem";
-            this.iconManagementToolStripMenuItem.Text = "Manage icons...";
+            this.iconManagementToolStripMenuItem.Text = "Manage icons";
             this.iconManagementToolStripMenuItem.Click += new System.EventHandler(this.iconManagementToolStripMenuItem_Click);
             //
             // deleteItemToolStripMenuItem
@@ -116,7 +118,7 @@ namespace NoFences
             // themeToolStripMenuItem
             //
             this.themeToolStripMenuItem.Name = "themeToolStripMenuItem";
-            this.themeToolStripMenuItem.Text = "Theme...";
+            this.themeToolStripMenuItem.Text = "Settings";
             this.themeToolStripMenuItem.Click += new System.EventHandler(this.themeToolStripMenuItem_Click);
             //
             // darkModeToolStripMenuItem
@@ -125,6 +127,13 @@ namespace NoFences
             this.darkModeToolStripMenuItem.Name = "darkModeToolStripMenuItem";
             this.darkModeToolStripMenuItem.Text = "Dark mode";
             this.darkModeToolStripMenuItem.Click += new System.EventHandler(this.darkModeToolStripMenuItem_Click);
+            //
+            // autoSnapToolStripMenuItem
+            //
+            this.autoSnapToolStripMenuItem.CheckOnClick = true;
+            this.autoSnapToolStripMenuItem.Name = "autoSnapToolStripMenuItem";
+            this.autoSnapToolStripMenuItem.Text = "Auto snap";
+            this.autoSnapToolStripMenuItem.Click += new System.EventHandler(this.autoSnapToolStripMenuItem_Click);
             //
             // toolStripSeparator1
             // 
@@ -201,6 +210,7 @@ namespace NoFences
         private System.Windows.Forms.ToolStripMenuItem scaleToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem themeToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem darkModeToolStripMenuItem;
+        private System.Windows.Forms.ToolStripMenuItem autoSnapToolStripMenuItem;
     }
 }
 

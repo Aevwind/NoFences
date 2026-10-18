@@ -34,7 +34,8 @@ namespace NoFences
                 return;
             }
 
-            // 在创建任何窗口前加载主题；同时设置原生菜单的明暗模式。
+            // 在创建任何窗口前加载基础配置（语言等）与主题；同时设置原生菜单的明暗模式。
+            AppSettingsManager.Initialize();
             ThemeManager.Initialize();
 
             // 通过命名 Mutex 确保单实例运行
