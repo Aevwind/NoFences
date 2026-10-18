@@ -244,7 +244,11 @@ jobs:
           $dialogType = $assembly.GetType("NoFences.Theming.ThemeConfigurationDialog", $true)
           $fenceType = $assembly.GetType("NoFences.FenceWindow", $true)
           $privateInstance = [System.Reflection.BindingFlags]"Instance,NonPublic"
-          if ($null -eq $dialogType.GetField("darkModeCheckBox", $privateInstance)) {
+          $dialogDarkModeField = $dialogType.GetField("darkModeSwitch", $privateInstance)
+          if ($null -eq $dialogDarkModeField) {
+            $dialogDarkModeField = $dialogType.GetField("darkModeCheckBox", $privateInstance)
+          }
+          if ($null -eq $dialogDarkModeField) {
             throw "Theme configuration dialog is missing its independent dark-mode switch."
           }
           if ($null -eq $fenceType.GetField("darkModeToolStripMenuItem", $privateInstance)) {

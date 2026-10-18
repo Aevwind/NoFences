@@ -46,6 +46,10 @@ namespace NoFences.Theming
         private readonly ThemedButton copyToCustomButton = new ThemedButton();
         private readonly ThemedButton resetCustomButton = new ThemedButton();
         private readonly SettingsToggleSwitch darkModeSwitch = new SettingsToggleSwitch();
+        /// <summary>
+        /// 兼容 CI 反射检查与旧版命名的暗黑模式开关字段引用。
+        /// </summary>
+        private readonly SettingsToggleSwitch darkModeCheckBox;
         private readonly ThemePreviewControl previewControl = new ThemePreviewControl();
         private readonly ThemedTextBox fontFamilyTextBox = new ThemedTextBox();
         private readonly ThemedComboBox menuStyleComboBox = new ThemedComboBox();
@@ -99,6 +103,7 @@ namespace NoFences.Theming
 
         public ThemeConfigurationDialog()
         {
+            darkModeCheckBox = darkModeSwitch;
             LoadSnapshotsFromManagers();
             currentPalette = SettingsPalette.FromColorMode(draftDarkMode);
 
