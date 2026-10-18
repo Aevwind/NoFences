@@ -33,6 +33,13 @@ namespace NoFences.Localization
             d[LKeys.MenuTitleSize] = "标题设置";
             d[LKeys.MenuScale] = "缩放比例";
             d[LKeys.MenuIconManagement] = "图标管理";
+            d[LKeys.MenuSort] = "排序方式";
+            d[LKeys.MenuSortByName] = "名称";
+            d[LKeys.MenuSortBySize] = "大小";
+            d[LKeys.MenuSortByType] = "项目类型";
+            d[LKeys.MenuSortByCreated] = "创建时间";
+            d[LKeys.MenuSortByModified] = "修改日期";
+            d[LKeys.MoveItemTitle] = "移动图标";
             d[LKeys.MenuSettings] = "设置";
             d[LKeys.MenuTheme] = "主题风格";
             d[LKeys.MenuDarkMode] = "黑暗模式";

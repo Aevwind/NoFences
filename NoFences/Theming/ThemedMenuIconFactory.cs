@@ -22,7 +22,8 @@ namespace NoFences.Theming
         DarkMode,
         NewFence,
         CloseFence,
-        QuitApplication
+        QuitApplication,
+        Sort
     }
 
     /// <summary>
@@ -159,6 +160,32 @@ namespace NoFences.Theming
                 case ThemedMenuIcon.QuitApplication:
                     DrawQuitIcon(graphics, outline);
                     break;
+                case ThemedMenuIcon.Sort:
+                    DrawSortIcon(graphics, outline);
+                    break;
+            }
+        }
+
+        /// <summary>绘制排序图标：长短递减的彩色横条与向下箭头。</summary>
+        private static void DrawSortIcon(Graphics graphics, Color outline)
+        {
+            FillGradientRoundedRectangle(graphics, new RectangleF(1.2f, 2f, 9f, 2.6f), 1.2f, Blue, Cyan, outline, 0f);
+            FillGradientRoundedRectangle(graphics, new RectangleF(1.2f, 6.7f, 6.6f, 2.6f), 1.2f, Purple, Pink, outline, 0f);
+            FillGradientRoundedRectangle(graphics, new RectangleF(1.2f, 11.4f, 4.2f, 2.6f), 1.2f, Orange, Yellow, outline, 0f);
+
+            using (var stem = CreateRoundedPen(Green, 1.5f))
+                graphics.DrawLine(stem, 12.6f, 2f, 12.6f, 11f);
+            using (var arrow = new SolidBrush(Green))
+            using (var border = new Pen(outline, 0.55f))
+            {
+                PointF[] head =
+                {
+                    new PointF(12.6f, 14.6f),
+                    new PointF(9.9f, 10.8f),
+                    new PointF(15.3f, 10.8f)
+                };
+                graphics.FillPolygon(arrow, head);
+                graphics.DrawPolygon(border, head);
             }
         }
 
@@ -730,6 +757,18 @@ namespace NoFences.Theming
                             red.EndCap = LineCap.Round;
                             graphics.DrawArc(red, 3, 3, 10, 10, -48, 276);
                             graphics.DrawLine(red, 8, 1, 8, 8);
+                        }
+                        break;
+                    case ThemedMenuIcon.Sort:
+                        using (var blue = new Pen(Color.FromArgb(49, 106, 197), 2f))
+                        using (var green = new Pen(Color.FromArgb(20, 145, 45), 2f))
+                        {
+                            graphics.DrawLine(blue, 1, 3, 10, 3);
+                            graphics.DrawLine(blue, 1, 8, 7, 8);
+                            graphics.DrawLine(blue, 1, 13, 4, 13);
+                            graphics.DrawLine(green, 13, 2, 13, 13);
+                            graphics.DrawLine(green, 13, 14, 10, 11);
+                            graphics.DrawLine(green, 13, 14, 15, 11);
                         }
                         break;
                 }

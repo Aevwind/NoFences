@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
@@ -235,6 +235,177 @@ namespace NoFences.Model
         public bool IsManagedDesktopEntry(FenceInfo info, string path)
         {
             return desktopShortcutManager.IsTrackedEntry(info, path);
+        }
+
+        /// <summary>
+        /// 将栅栏内指定条目移动到新的列表位置（手动拖拽排序）。
+        /// targetIndex 为移动前列表中的插入位置，取值 0..Files.Count。
+        /// </summary>
+        public bool TryReorderEntry(FenceInfo info, string path, int targetIndex, out string error)
+        {
+            try
+            {
+                if (info.Files == null)
+                {
+                    error = null;
+                    return false;
+                }
+
+                int sourceIndex = info.Files.FindIndex(p => PathsEqual(p, path));
+                if (sourceIndex < 0)
+                {
+                    error = null;
+                    return false;
+                }
+
+                targetIndex = Math.Max(0, Math.Min(info.Files.Count, targetIndex));
+                if (targetIndex == sourceIndex || targetIndex == sourceIndex + 1)
+                {
+                    error = null;
+                    return false;
+                }
+
+                var previousFiles = new List<string>(info.Files);
+                string item = info.Files[sourceIndex];
+                info.Files.RemoveAt(sourceIndex);
+                if (targetIndex > sourceIndex)
+                    targetIndex--;
+                info.Files.Insert(targetIndex, item);
+                try
+                {
+                    UpdateFence(info);
+                }
+                catch
+                {
+                    info.Files = previousFiles;
+                    throw;
+                }
+
+                error = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "无法调整图标顺序：" + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>按指定比较器对栅栏条目整体重新排序并持久化。</summary>
+        public bool TrySortEntries(FenceInfo info, Comparison<string> comparison, out string error)
+        {
+            try
+            {
+                if (info.Files == null || info.Files.Count < 2)
+                {
+                    error = null;
+                    return true;
+                }
+
+                var previousFiles = new List<string>(info.Files);
+                // 稳定排序：比较结果相同时保持原有相对顺序
+                var indexed = info.Files
+                    .Select((p, i) => new KeyValuePair<int, string>(i, p))
+                    .ToList();
+                indexed.Sort((a, b) =>
+                {
+                    int result = comparison(a.Value, b.Value);
+                    return result != 0 ? result : a.Key.CompareTo(b.Key);
+                });
+                info.Files = indexed.Select(pair => pair.Value).ToList();
+                try
+                {
+                    UpdateFence(info);
+                }
+                catch
+                {
+                    info.Files = previousFiles;
+                    throw;
+                }
+
+                error = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "无法排序图标：" + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 将条目从一个栅栏移动到另一个栅栏的指定位置。
+        /// 托管的桌面快捷方式会先恢复到桌面，再由目标栅栏重新托管，
+        /// 以保证恢复记录始终归属于实际持有文件的栅栏。
+        /// </summary>
+        public bool TryMoveEntry(
+            FenceInfo source,
+            FenceInfo target,
+            string path,
+            int targetIndex,
+            out string error)
+        {
+            if (source == null || target == null || ReferenceEquals(source, target))
+            {
+                error = null;
+                return false;
+            }
+
+            if (target.Files == null)
+                target.Files = new List<string>();
+
+            string pathToAdd = path;
+            if (desktopShortcutManager.IsTrackedEntry(source, path))
+            {
+                DesktopShortcutInfo record = source.DesktopShortcuts?
+                    .FirstOrDefault(r => r != null && PathsEqual(r.ManagedPath, path));
+                if (!TryRemoveEntry(source, path, out error))
+                    return false;
+                // 恢复时可能回退到当前用户桌面，此时 OriginalPath 已被更新为实际位置
+                if (record != null && !string.IsNullOrEmpty(record.OriginalPath))
+                    pathToAdd = record.OriginalPath;
+            }
+            else if (!TryRemoveEntry(source, path, out error))
+            {
+                return false;
+            }
+
+            var before = new HashSet<string>(target.Files, StringComparer.OrdinalIgnoreCase);
+            if (!TryAddEntry(target, pathToAdd, out error))
+            {
+                // 普通条目添加失败时放回原栅栏；托管快捷方式此时已安全恢复到桌面
+                string rollbackError;
+                TryAddEntry(source, pathToAdd, out rollbackError);
+                return false;
+            }
+
+            string added = target.Files.FirstOrDefault(p => !before.Contains(p));
+            if (added == null)
+            {
+                // 目标栅栏已包含该条目，无需调整位置
+                error = null;
+                return true;
+            }
+
+            int currentIndex = target.Files.IndexOf(added);
+            int insertIndex = Math.Max(0, Math.Min(before.Count, targetIndex));
+            if (currentIndex != insertIndex)
+            {
+                target.Files.RemoveAt(currentIndex);
+                target.Files.Insert(Math.Min(insertIndex, target.Files.Count), added);
+                try
+                {
+                    UpdateFence(target);
+                }
+                catch (Exception ex)
+                {
+                    error = "图标已移动，但无法保存目标位置：" + ex.Message;
+                    return true;
+                }
+            }
+
+            error = null;
+            return true;
         }
 
         /// <summary>同步托管快捷方式在原生 Shell 菜单中发生的重命名、移动或删除。</summary>

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 
 namespace NoFences.Win32
@@ -31,7 +31,13 @@ namespace NoFences.Win32
         public const int WM_SETTINGCHANGE = 0x001A;  // 系统设置变化广播（主题/字体等）
         public const int WM_DPICHANGED = 0x02E0;     // 当前窗口 DPI 变化通知
         public const int WM_SIZING = 0x0214;          // 窗口拖动调整大小中
+        public static readonly IntPtr HWND_TOP = IntPtr.Zero;
         public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
+        public const int WM_MOUSEACTIVATE = 0x0021;
+        public const int MA_ACTIVATE = 1;
+        public const int MA_ACTIVATEANDEAT = 2;
+        public const int MA_NOACTIVATE = 3;
+        public const int MA_NOACTIVATEANDEAT = 4;
         public const int WM_WINDOWPOSCHANGING = 0x0046;
 
         // WM_SIZING 时 wParam 指示正在拖拽的边框/角
@@ -270,5 +276,29 @@ namespace NoFences.Win32
             exStyle |= (int)ExtendedWindowStyles.WS_EX_TOOLWINDOW;
             SetWindowLong(Handle, (int)GetWindowLongFields.GWL_EXSTYLE, (IntPtr)exStyle);
         }
+
+        /// <summary>
+        /// 使用 Windows 原生逻辑字符串比较算法比较两个字符串（数字按数值大小比较）。
+        /// </summary>
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        public static extern int StrCmpLogicalW(string psz1, string psz2);
+
+        /// <summary>原生点坐标结构体，对应 Win32 POINT</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+
+            public POINT(int x, int y)
+            {
+                X = x;
+                Y = y;
+            }
+        }
+
+        /// <summary>获取包含屏幕指定点的窗口句柄（忽略禁用或隐藏窗口）。</summary>
+        [DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(POINT Point);
     }
 }

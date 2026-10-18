@@ -33,6 +33,13 @@ namespace NoFences.Localization
             d[LKeys.MenuTitleSize] = "Title settings";
             d[LKeys.MenuScale] = "Scale";
             d[LKeys.MenuIconManagement] = "Manage icons";
+            d[LKeys.MenuSort] = "Sort by";
+            d[LKeys.MenuSortByName] = "Name";
+            d[LKeys.MenuSortBySize] = "Size";
+            d[LKeys.MenuSortByType] = "Item type";
+            d[LKeys.MenuSortByCreated] = "Date created";
+            d[LKeys.MenuSortByModified] = "Date modified";
+            d[LKeys.MoveItemTitle] = "Move icon";
             d[LKeys.MenuSettings] = "Settings";
             d[LKeys.MenuTheme] = "Theme";
             d[LKeys.MenuDarkMode] = "Dark mode";

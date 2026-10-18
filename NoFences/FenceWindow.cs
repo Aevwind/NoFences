@@ -32,6 +32,7 @@ namespace NoFences
 
         private Font titleFont;
         private Font iconFont;
+        private Font uiBoldFont;
         private readonly StringFormat standardIconTextFormat = new StringFormat
         {
             Alignment = StringAlignment.Center,
@@ -81,6 +82,24 @@ namespace NoFences
 
         private int scrollHeight;
         private int scrollOffset;
+
+        // 右键“排序方式”子菜单（代码创建，不放入 Designer 以免资源文件冲突）
+        private ToolStripMenuItem sortToolStripMenuItem;
+        private ToolStripMenuItem sortByNameToolStripMenuItem;
+        private ToolStripMenuItem sortBySizeToolStripMenuItem;
+        private ToolStripMenuItem sortByTypeToolStripMenuItem;
+        private ToolStripMenuItem sortByModifiedToolStripMenuItem;
+        private ToolStripMenuItem sortByCreatedToolStripMenuItem;
+
+        // 图标手动拖拽：按下时记录候选条目，超过系统拖拽阈值后进入拖拽状态。
+        // 拖拽期间鼠标由源窗口捕获，跨分区命中通过屏幕坐标查找目标分区窗口。
+        private string dragCandidatePath;
+        private Point dragStartPoint;
+        private bool isDraggingItem;
+        private bool suppressNextClick;
+        private FenceWindow dragHoverTarget;
+        // 本窗口作为拖放目标时的插入位置（fenceInfo.Files 索引），-1 表示不显示指示线
+        private int dropIndicatorIndex = -1;
 
         // 定时轮询桌面图标大小变化（Ctrl+滚轮缩放不会触发 WM_SETTINGCHANGE）
         private readonly Timer iconMetricsPollTimer;
@@ -429,6 +448,7 @@ namespace NoFences
         {
             titleFont?.Dispose();
             iconFont?.Dispose();
+            uiBoldFont?.Dispose();
 
             string familyName = ResolveDesktopFontFamily(iconMetrics.lfFont.lfFaceName);
             float availableSpace = IsVerticalTitleBar
@@ -442,6 +462,14 @@ namespace NoFences
             catch
             {
                 titleFont = new Font("Segoe UI", titleSize, FontStyle.Regular);
+            }
+            try
+            {
+                uiBoldFont = new Font(familyName, 9.5f, FontStyle.Bold);
+            }
+            catch
+            {
+                uiBoldFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             }
             iconFont = CreateIconFontFromLogFont();
         }
@@ -462,6 +490,9 @@ namespace NoFences
                 true);
             UpdateStyles();
             InitializeScaleSubMenu();
+            InitializeSortSubMenu();
+            MouseDown += FenceWindow_MouseDown;
+            MouseUp += FenceWindow_MouseUp;
             ApplyContextMenuLocalization();
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
             autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
@@ -581,6 +612,161 @@ namespace NoFences
                 Save();
             }
         }
+
+        /// <summary>初始化右键“排序方式”二级子菜单。</summary>
+        private void InitializeSortSubMenu()
+        {
+            sortToolStripMenuItem = new ToolStripMenuItem();
+            sortByNameToolStripMenuItem = new ToolStripMenuItem();
+            sortBySizeToolStripMenuItem = new ToolStripMenuItem();
+            sortByTypeToolStripMenuItem = new ToolStripMenuItem();
+            sortByModifiedToolStripMenuItem = new ToolStripMenuItem();
+            sortByCreatedToolStripMenuItem = new ToolStripMenuItem();
+
+            sortByNameToolStripMenuItem.Click += (s, e) => ApplySort(CompareByName);
+            sortBySizeToolStripMenuItem.Click += (s, e) => ApplySort(CompareBySize);
+            sortByTypeToolStripMenuItem.Click += (s, e) => ApplySort(CompareByType);
+            sortByModifiedToolStripMenuItem.Click += (s, e) => ApplySort(CompareByModified);
+            sortByCreatedToolStripMenuItem.Click += (s, e) => ApplySort(CompareByCreated);
+
+            sortToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                sortByNameToolStripMenuItem,
+                sortBySizeToolStripMenuItem,
+                sortByTypeToolStripMenuItem,
+                sortByModifiedToolStripMenuItem,
+                sortByCreatedToolStripMenuItem
+            });
+
+            int manageIndex = appContextMenu.Items.IndexOf(iconManagementToolStripMenuItem);
+            if (manageIndex >= 0)
+                appContextMenu.Items.Insert(manageIndex + 1, sortToolStripMenuItem);
+            else
+                appContextMenu.Items.Add(sortToolStripMenuItem);
+        }
+
+        /// <summary>按指定比较规则对栅栏内图标进行重新排序并持久化。</summary>
+        private void ApplySort(Comparison<string> comparison)
+        {
+            if (fenceInfo?.Files == null || fenceInfo.Files.Count < 2)
+                return;
+
+            string error;
+            if (FenceManager.Instance.TrySortEntries(fenceInfo, comparison, out error))
+            {
+                Refresh();
+            }
+            else if (!string.IsNullOrEmpty(error))
+            {
+                MessageBox.Show(
+                    this,
+                    error,
+                    ThemeText.Key(NoFences.Localization.LKeys.MenuSort),
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        private static int CompareByName(string a, string b)
+        {
+            string nameA = Path.GetFileNameWithoutExtension(a) ?? "";
+            string nameB = Path.GetFileNameWithoutExtension(b) ?? "";
+            int cmp = WindowUtil.StrCmpLogicalW(nameA, nameB);
+            if (cmp != 0) return cmp;
+            return WindowUtil.StrCmpLogicalW(a ?? "", b ?? "");
+        }
+
+        private static long GetItemSize(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    return new FileInfo(path).Length;
+                return -1L;
+            }
+            catch
+            {
+                return -1L;
+            }
+        }
+
+        private static int CompareBySize(string a, string b)
+        {
+            long sizeA = GetItemSize(a);
+            long sizeB = GetItemSize(b);
+            int cmp = sizeB.CompareTo(sizeA); // 降序：大文件在前
+            if (cmp != 0) return cmp;
+            return CompareByName(a, b);
+        }
+
+        private static string GetItemTypeKey(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                    return "\0"; // 文件夹排在最前
+                string ext = Path.GetExtension(path);
+                return string.IsNullOrEmpty(ext) ? " " : ext.ToLowerInvariant();
+            }
+            catch
+            {
+                return " ";
+            }
+        }
+
+        private static int CompareByType(string a, string b)
+        {
+            string typeA = GetItemTypeKey(a);
+            string typeB = GetItemTypeKey(b);
+            int cmp = string.Compare(typeA, typeB, StringComparison.CurrentCultureIgnoreCase);
+            if (cmp != 0) return cmp;
+            return CompareByName(a, b);
+        }
+
+        private static DateTime GetItemModifiedTime(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    return File.GetLastWriteTime(path);
+                if (Directory.Exists(path))
+                    return Directory.GetLastWriteTime(path);
+            }
+            catch { }
+            return DateTime.MinValue;
+        }
+
+        private static int CompareByModified(string a, string b)
+        {
+            DateTime timeA = GetItemModifiedTime(a);
+            DateTime timeB = GetItemModifiedTime(b);
+            int cmp = timeB.CompareTo(timeA); // 降序：最近修改在前
+            if (cmp != 0) return cmp;
+            return CompareByName(a, b);
+        }
+
+        private static DateTime GetItemCreationTime(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    return File.GetCreationTime(path);
+                if (Directory.Exists(path))
+                    return Directory.GetCreationTime(path);
+            }
+            catch { }
+            return DateTime.MinValue;
+        }
+
+        private static int CompareByCreated(string a, string b)
+        {
+            DateTime timeA = GetItemCreationTime(a);
+            DateTime timeB = GetItemCreationTime(b);
+            int cmp = timeB.CompareTo(timeA); // 降序：最新创建在前
+            if (cmp != 0) return cmp;
+            return CompareByName(a, b);
+        }
+
 
         /// <summary>
         /// 监控分区托管目录。原生菜单的剪切操作可能在菜单关闭后才真正搬走文件，
@@ -755,6 +941,7 @@ namespace NoFences
             SetContextMenuIcon(renameToolStripMenuItem, ThemedMenuIcon.Rename);
             SetContextMenuIcon(titleSizeToolStripMenuItem, ThemedMenuIcon.TitleHeight);
             SetContextMenuIcon(scaleToolStripMenuItem, ThemedMenuIcon.Scale);
+            SetContextMenuIcon(sortToolStripMenuItem, ThemedMenuIcon.Sort);
             SetContextMenuIcon(themeToolStripMenuItem, ThemedMenuIcon.Settings);
             SetContextMenuIcon(newFenceToolStripMenuItem, ThemedMenuIcon.NewFence);
             SetContextMenuIcon(exitToolStripMenuItem, ThemedMenuIcon.CloseFence);
@@ -781,6 +968,8 @@ namespace NoFences
             renameToolStripMenuItem.Image = null;
             titleSizeToolStripMenuItem.Image = null;
             scaleToolStripMenuItem.Image = null;
+            if (sortToolStripMenuItem != null)
+                sortToolStripMenuItem.Image = null;
             themeToolStripMenuItem.Image = null;
             darkModeToolStripMenuItem.Image = null;
             autoSnapToolStripMenuItem.Image = null;
@@ -1023,10 +1212,11 @@ namespace NoFences
                 ApplyIconMetrics();
             }
 
-            // 阻止获取焦点（保持在桌面窗口下方，不抢 Progman 焦点）
-            if (m.Msg == WM_SETFOCUS)
+            // 鼠标点击激活：当多个栅栏重叠时，点击当前栅栏应将其置顶于其他栅栏之上，且保持正常交互响应
+            if (m.Msg == WM_MOUSEACTIVATE)
             {
-                SetWindowPos(Handle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
+                SetWindowPos(Handle, HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
+                m.Result = (IntPtr)MA_ACTIVATE;
                 return;
             }
 
@@ -1038,8 +1228,8 @@ namespace NoFences
 
             base.WndProc(ref m);
 
-            // 锁定状态或鼠标右键按下时，不允许拖动和调整大小
-            if (MouseButtons == MouseButtons.Right || lockedToolStripMenuItem.Checked)
+            // 处于图标拖拽状态、锁定状态或鼠标右键按下时，不允许拖动和调整大小
+            if (isDraggingItem || MouseButtons == MouseButtons.Right || lockedToolStripMenuItem.Checked)
                 return;
 
             // WM_NCHITTEST：自定义无边框窗口的拖动和调整大小区域
@@ -1350,6 +1540,15 @@ namespace NoFences
             titleSizeToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuTitleSize);
             scaleToolStripMenuItem.Text = ThemeText.ScaleMenu;
             iconManagementToolStripMenuItem.Text = ThemeText.IconManagement;
+            if (sortToolStripMenuItem != null)
+            {
+                sortToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuSort);
+                sortByNameToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuSortByName);
+                sortBySizeToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuSortBySize);
+                sortByTypeToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuSortByType);
+                sortByModifiedToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuSortByModified);
+                sortByCreatedToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuSortByCreated);
+            }
             themeToolStripMenuItem.Text = ThemeText.SettingsMenu;
             darkModeToolStripMenuItem.Text = ThemeText.DarkMode;
             autoSnapToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuAutoSnap);
@@ -1367,6 +1566,11 @@ namespace NoFences
             ApplyContextMenuLocalization();
             deleteItemToolStripMenuItem.Visible = hoveringItem != null;
             iconManagementToolStripMenuItem.Enabled = !isIconManagementMode;
+            if (sortToolStripMenuItem != null)
+            {
+                sortToolStripMenuItem.Visible = !isIconManagementMode;
+                sortToolStripMenuItem.Enabled = !isIconManagementMode && (fenceInfo?.Files?.Count > 1);
+            }
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
             autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
             if (scaleMenuControl != null)
@@ -1448,9 +1652,31 @@ namespace NoFences
             });
         }
 
-        /// <summary>鼠标移动：触发重绘以更新悬停高亮。</summary>
+        /// <summary>鼠标移动：处理图标拖拽移动判定，以及悬停高亮更新。</summary>
         private void FenceWindow_MouseMove(object sender, MouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Left && !string.IsNullOrEmpty(dragCandidatePath) && !isIconManagementMode)
+            {
+                if (!isDraggingItem)
+                {
+                    int dx = Math.Abs(e.Location.X - dragStartPoint.X);
+                    int dy = Math.Abs(e.Location.Y - dragStartPoint.Y);
+                    Size dragSize = SystemInformation.DragSize;
+                    if (dx > dragSize.Width || dy > dragSize.Height)
+                    {
+                        isDraggingItem = true;
+                        Capture = true;
+                        suppressNextClick = true;
+                    }
+                }
+
+                if (isDraggingItem)
+                {
+                    HandleItemDragMove(e.Location);
+                    return;
+                }
+            }
+
             string hitPath = null;
             if (!isIconManagementMode &&
                 !string.IsNullOrEmpty(selectedItem) &&
@@ -1502,6 +1728,9 @@ namespace NoFences
         /// <summary>鼠标离开：尝试向标题栏方向收起窗口。选中状态不取消，由用户点击其他条目或空白区域来改变。</summary>
         private void FenceWindow_MouseLeave(object sender, EventArgs e)
         {
+            if (isDraggingItem)
+                return;
+
             iconManagementHoverTarget = 0;
             if (isAnimatingMinify && !isMinified && Bounds.Contains(MousePosition))
             {
@@ -1780,6 +2009,12 @@ namespace NoFences
         {
             if (isIconManagementMode)
                 return;
+
+            if (suppressNextClick)
+            {
+                suppressNextClick = false;
+                return;
+            }
 
             shouldUpdateSelection = true;
             Refresh();
@@ -2060,8 +2295,20 @@ namespace NoFences
                 }
             }
 
+            // 绘制拖拽插入指示线（仅在作为目标分区且 dropIndicatorIndex 有效时绘制）
+            if (dropIndicatorIndex >= 0)
+            {
+                DrawDropIndicator(e.Graphics, theme, contentViewport);
+            }
+
             // 单击/双击处理标志重置（这些标志在 Paint 周期中执行实际操作）
             e.Graphics.Restore(contentState);
+
+            // 绘制跟随鼠标移动的拖拽半透明幽灵图标
+            if (isDraggingItem)
+            {
+                DrawDraggingGhost(e.Graphics, theme);
+            }
 
             if (isIconManagementMode)
                 DrawIconManagementFooter(e.Graphics, theme, contentViewport, managementFooterHeight);
@@ -2295,10 +2542,11 @@ namespace NoFences
 
             // 绘制选中/悬停背景。XP 默认悬浮无反馈，且选中效果由后续的
             // 图标染色和文字实色底组成，因此这里只处理现代整项高亮。
+            // 在图标管理模式下，不使用全项高亮，而是通过专用的图标卡片高亮与勾选标记展示状态。
             bool selected = isIconManagementMode
                 ? iconManagementSelection.Contains(entry.Path)
                 : selectedItem == entry.Path;
-            if (!skipText && theme.MenuStyle != ThemeMenuStyle.WindowsXp)
+            if (!skipText && theme.MenuStyle != ThemeMenuStyle.WindowsXp && !isIconManagementMode)
             {
                 DrawModernDesktopItemState(
                     g,
@@ -2310,7 +2558,11 @@ namespace NoFences
 
             // 绘制图标（居中缩放至 iconSize × iconSize）
             var iconRect = new Rectangle(x + itemWidth / 2 - iconSize / 2, y, iconSize, iconSize);
-            DrawDesktopIconForState(g, icon, iconRect, selected, theme);
+            if (isIconManagementMode)
+            {
+                DrawIconManagementCard(g, iconRect, selected, mouseOver, theme);
+            }
+            DrawDesktopIconForState(g, icon, iconRect, selected && !isIconManagementMode, theme);
             if (isIconManagementMode)
                 DrawIconManagementCheck(g, iconRect, selected, theme);
 
@@ -2324,8 +2576,8 @@ namespace NoFences
                 new RectangleF(textPosition, textMaxSize),
                 standardIconTextFormat,
                 theme,
-                selected,
-                mouseOver);
+                !isIconManagementMode && selected,
+                !isIconManagementMode && mouseOver);
 
             return outlineRect;
         }
@@ -2678,6 +2930,114 @@ namespace NoFences
                 format);
         }
 
+        /// <summary>在图标管理模式下为条目图标绘制独立的圆角卡片选择和悬停高亮框。</summary>
+        private void DrawIconManagementCard(
+            Graphics graphics,
+            Rectangle iconBounds,
+            bool selected,
+            bool hovered,
+            ThemeDefinition theme)
+        {
+            if (!selected && !hovered)
+                return;
+
+            int padding = Math.Max(LogicalPixelsToDevice(5), iconBounds.Width / 8);
+            var cardBounds = Rectangle.Inflate(iconBounds, padding, padding);
+            int radius = Math.Max(LogicalPixelsToDevice(6), LogicalPixelsToDevice(theme.CornerRadius > 0 ? Math.Min(8, theme.CornerRadius) : 6));
+            bool isDark = ThemeDrawing.IsDark(theme.MainPanelColor);
+
+            using (var path = ThemeDrawing.CreateRoundedRectangle(cardBounds, radius))
+            {
+                if (selected)
+                {
+                    Color fillColor = ThemeDrawing.WithAlpha(theme.AccentColor, isDark ? 45 : 35);
+                    using (var fillBrush = new SolidBrush(fillColor))
+                    using (var strokePen = new Pen(theme.AccentColor, Math.Max(2f, LogicalPixelsToDevice(2))))
+                    {
+                        graphics.FillPath(fillBrush, path);
+                        graphics.DrawPath(strokePen, path);
+                    }
+                }
+                else if (hovered)
+                {
+                    Color fillColor = isDark
+                        ? Color.FromArgb(25, 255, 255, 255)
+                        : Color.FromArgb(15, 0, 0, 0);
+                    Color strokeColor = isDark
+                        ? Color.FromArgb(80, 255, 255, 255)
+                        : Color.FromArgb(50, 0, 0, 0);
+                    using (var fillBrush = new SolidBrush(fillColor))
+                    using (var strokePen = new Pen(strokeColor, Math.Max(1.5f, (float)LogicalPixelsToDevice(1))))
+                    {
+                        graphics.FillPath(fillBrush, path);
+                        graphics.DrawPath(strokePen, path);
+                    }
+                }
+            }
+        }
+
+        /// <summary>在管理模式下为每个图标绘制可多选的圆形勾选标记。</summary>
+        private void DrawIconManagementCheck(
+            Graphics graphics,
+            Rectangle iconBounds,
+            bool selected,
+            ThemeDefinition theme)
+        {
+            int padding = Math.Max(LogicalPixelsToDevice(5), iconBounds.Width / 8);
+            var cardBounds = Rectangle.Inflate(iconBounds, padding, padding);
+            int badgeSize = Math.Max(LogicalPixelsToDevice(18), (int)(iconBounds.Width * 0.36f));
+            var badgeRect = new Rectangle(
+                cardBounds.Right - badgeSize + LogicalPixelsToDevice(2),
+                cardBounds.Top - LogicalPixelsToDevice(2),
+                badgeSize,
+                badgeSize);
+
+            bool isDark = ThemeDrawing.IsDark(theme.MainPanelColor);
+
+            if (selected)
+            {
+                using (var fillBrush = new SolidBrush(theme.AccentColor))
+                using (var pen = new Pen(Color.White, Math.Max(1.8f, (float)LogicalPixelsToDevice(2))))
+                {
+                    graphics.FillEllipse(fillBrush, badgeRect);
+
+                    pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                    pen.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+
+                    var pts = new[]
+                    {
+                        new PointF(badgeRect.Left + badgeSize * 0.28f, badgeRect.Top + badgeSize * 0.52f),
+                        new PointF(badgeRect.Left + badgeSize * 0.46f, badgeRect.Top + badgeSize * 0.72f),
+                        new PointF(badgeRect.Left + badgeSize * 0.76f, badgeRect.Top + badgeSize * 0.32f)
+                    };
+                    graphics.DrawLines(pen, pts);
+                }
+            }
+            else
+            {
+                Color fillColor = isDark
+                    ? Color.FromArgb(35, 255, 255, 255)
+                    : Color.FromArgb(220, 255, 255, 255);
+                Color strokeColor = isDark
+                    ? Color.FromArgb(140, 255, 255, 255)
+                    : Color.FromArgb(120, 160, 180);
+
+                using (var fillBrush = new SolidBrush(fillColor))
+                using (var pen = new Pen(strokeColor, Math.Max(1.5f, (float)LogicalPixelsToDevice(1))))
+                {
+                    graphics.FillEllipse(fillBrush, badgeRect);
+                    graphics.DrawEllipse(pen, badgeRect);
+                }
+            }
+        }
+
+        /// <summary>返回当前 DPI 下图标管理底栏的设备像素高度。</summary>
+        private int GetIconManagementFooterHeight()
+        {
+            return LogicalPixelsToDevice(48);
+        }
+
         /// <summary>绘制图标管理模式底栏的确认、取消按钮和选择数量提示。</summary>
         private void DrawIconManagementFooter(
             Graphics graphics,
@@ -2694,29 +3054,38 @@ namespace NoFences
                 footerTop,
                 contentViewport.Width,
                 footerHeight);
-            using (var footerBrush = new SolidBrush(
-                ThemeDrawing.WithAlpha(theme.TitleBarColor, 220)))
-            using (var separatorPen = new Pen(
-                ThemeDrawing.WithAlpha(theme.BorderColor, 145)))
+
+            bool isDark = ThemeDrawing.IsDark(theme.MainPanelColor);
+
+            Color footerBg = isDark
+                ? Color.FromArgb(245, 20, 28, 36)
+                : Color.FromArgb(250, 245, 248, 252);
+            Color sepColor = isDark
+                ? Color.FromArgb(40, 255, 255, 255)
+                : Color.FromArgb(25, 0, 0, 0);
+
+            using (var footerBrush = new SolidBrush(footerBg))
+            using (var separatorPen = new Pen(sepColor, 1f))
             {
                 graphics.FillRectangle(footerBrush, footerBounds);
                 graphics.DrawLine(separatorPen, footerBounds.Left, footerTop, footerBounds.Right, footerTop);
             }
 
-            int margin = LogicalPixelsToDevice(7);
-            int gap = LogicalPixelsToDevice(5);
+            int margin = LogicalPixelsToDevice(14);
+            int gap = LogicalPixelsToDevice(8);
             int buttonHeight = Math.Min(
-                LogicalPixelsToDevice(30),
-                Math.Max(1, footerBounds.Height - margin * 2));
+                LogicalPixelsToDevice(32),
+                Math.Max(1, footerBounds.Height - LogicalPixelsToDevice(10)));
+            int cancelWidth = LogicalPixelsToDevice(76);
+            int confirmWidth = LogicalPixelsToDevice(76);
+
             int availableWidth = Math.Max(2, footerBounds.Width - margin * 2 - gap);
-            int cancelWidth = Math.Max(
-                1,
-                Math.Min(LogicalPixelsToDevice(68), availableWidth / 2));
-            int confirmWidth = Math.Max(
-                1,
-                Math.Min(
-                    LogicalPixelsToDevice(88),
-                    availableWidth - cancelWidth));
+            if (cancelWidth + confirmWidth > availableWidth)
+            {
+                cancelWidth = Math.Max(1, availableWidth / 2);
+                confirmWidth = Math.Max(1, availableWidth - cancelWidth);
+            }
+
             int buttonTop = footerTop + (footerBounds.Height - buttonHeight) / 2;
 
             iconManagementCancelBounds = new Rectangle(
@@ -2750,35 +3119,33 @@ namespace NoFences
                 theme);
 
             int hintLeft = footerBounds.Left + margin;
-            int hintRight = iconManagementConfirmBounds.Left - margin;
+            int hintRight = iconManagementConfirmBounds.Left - LogicalPixelsToDevice(10);
             if (hintRight > hintLeft)
             {
                 string hint = iconManagementSelection.Count > 0
                     ? ThemeText.SelectedItemCount(iconManagementSelection.Count)
                     : ThemeText.IconManagementHint;
-                var hintBounds = new Rectangle(
+                var hintBounds = new RectangleF(
                     hintLeft,
                     footerTop,
                     hintRight - hintLeft,
                     footerBounds.Height);
-                TextRenderer.DrawText(
-                    graphics,
-                    hint,
-                    iconFont ?? Font,
-                    hintBounds,
-                    theme.ItemTextColor,
-                    TextFormatFlags.Left |
-                    TextFormatFlags.VerticalCenter |
-                    TextFormatFlags.SingleLine |
-                    TextFormatFlags.EndEllipsis |
-                    TextFormatFlags.NoPadding);
-            }
-        }
 
-        /// <summary>返回当前 DPI 下图标管理底栏的设备像素高度。</summary>
-        private int GetIconManagementFooterHeight()
-        {
-            return LogicalPixelsToDevice(46);
+                Color hintColor = isDark
+                    ? Color.White
+                    : theme.AccentColor;
+
+                Font fontToUse = uiBoldFont ?? iconFont ?? Font;
+                using (var hintBrush = new SolidBrush(hintColor))
+                using (var sf = new StringFormat(StringFormat.GenericTypographic))
+                {
+                    sf.Alignment = StringAlignment.Near;
+                    sf.LineAlignment = StringAlignment.Center;
+                    sf.Trimming = StringTrimming.EllipsisCharacter;
+                    sf.FormatFlags = StringFormatFlags.NoWrap;
+                    graphics.DrawString(hint, fontToUse, hintBrush, hintBounds, sf);
+                }
+            }
         }
 
         /// <summary>按当前主题绘制图标管理底栏中的单个操作按钮。</summary>
@@ -2788,118 +3155,84 @@ namespace NoFences
             string text,
             bool enabled,
             bool hovered,
-            bool accent,
+            bool isConfirm,
             ThemeDefinition theme)
         {
+            bool isDark = ThemeDrawing.IsDark(theme.MainPanelColor);
+
             Color fillColor;
-            if (!enabled)
+            Color borderColor;
+            Color textColor;
+
+            if (isConfirm)
             {
-                fillColor = ThemeDrawing.Mix(
-                    theme.MainPanelColor,
-                    theme.ControlBackgroundColor,
-                    0.22f);
+                if (!enabled)
+                {
+                    if (isDark)
+                    {
+                        fillColor = Color.FromArgb(35, 42, 50);
+                        borderColor = Color.FromArgb(55, 64, 72);
+                        textColor = Color.FromArgb(120, 130, 140);
+                    }
+                    else
+                    {
+                        fillColor = Color.FromArgb(232, 236, 240);
+                        borderColor = Color.FromArgb(216, 220, 224);
+                        textColor = Color.FromArgb(160, 168, 176);
+                    }
+                }
+                else
+                {
+                    if (isDark)
+                    {
+                        fillColor = hovered ? Color.FromArgb(74, 86, 100) : Color.FromArgb(58, 68, 78);
+                        borderColor = hovered ? Color.FromArgb(112, 130, 148) : Color.FromArgb(95, 110, 125);
+                        textColor = Color.White;
+                    }
+                    else
+                    {
+                        fillColor = hovered
+                            ? ThemeDrawing.Mix(theme.AccentColor, Color.Black, 0.12f)
+                            : theme.AccentColor;
+                        borderColor = fillColor;
+                        textColor = Color.White;
+                    }
+                }
             }
-            else if (accent)
+            else // Cancel button
             {
-                fillColor = theme.AccentColor;
-            }
-            else
-            {
-                fillColor = ThemeDrawing.Mix(
-                    theme.MainPanelColor,
-                    theme.ControlBackgroundColor,
-                    0.45f);
+                if (isDark)
+                {
+                    fillColor = hovered ? Color.FromArgb(48, 62, 76) : Color.FromArgb(36, 48, 60);
+                    borderColor = hovered ? Color.FromArgb(79, 98, 116) : Color.FromArgb(62, 78, 94);
+                    textColor = Color.White;
+                }
+                else
+                {
+                    fillColor = hovered ? Color.FromArgb(240, 244, 248) : Color.White;
+                    borderColor = hovered ? Color.FromArgb(184, 198, 212) : Color.FromArgb(205, 215, 225);
+                    textColor = Color.FromArgb(45, 52, 60);
+                }
             }
 
-            if (hovered && enabled)
-            {
-                fillColor = ThemeDrawing.Mix(
-                    fillColor,
-                    ThemeDrawing.IsDark(fillColor) ? Color.White : Color.Black,
-                    0.12f);
-            }
-
-            int radius = theme.CornerRadius > 0
-                ? LogicalPixelsToDevice(Math.Min(8, theme.CornerRadius))
-                : 0;
+            int radius = LogicalPixelsToDevice(6);
             using (var path = ThemeDrawing.CreateRoundedRectangle(bounds, radius))
-            using (var brush = new SolidBrush(
-                ThemeDrawing.WithAlpha(fillColor, enabled ? 230 : 120)))
-            using (var pen = new Pen(
-                ThemeDrawing.WithAlpha(theme.BorderColor, enabled ? 190 : 90)))
+            using (var brush = new SolidBrush(fillColor))
+            using (var pen = new Pen(borderColor, 1f))
             {
                 graphics.FillPath(brush, path);
                 graphics.DrawPath(pen, path);
             }
 
-            Color textColor = !enabled
-                ? ThemeDrawing.WithAlpha(theme.ItemTextColor, 105)
-                : accent
-                    ? (ThemeDrawing.IsDark(fillColor) ? Color.White : Color.Black)
-                    : theme.ItemTextColor;
-            TextRenderer.DrawText(
-                graphics,
-                text,
-                iconFont ?? Font,
-                bounds,
-                textColor,
-                TextFormatFlags.HorizontalCenter |
-                TextFormatFlags.VerticalCenter |
-                TextFormatFlags.SingleLine |
-                TextFormatFlags.EndEllipsis |
-                TextFormatFlags.NoPadding);
-        }
-
-        /// <summary>在管理模式下为每个图标绘制可多选的圆形勾选标记。</summary>
-        private void DrawIconManagementCheck(
-            Graphics graphics,
-            Rectangle iconBounds,
-            bool selected,
-            ThemeDefinition theme)
-        {
-            int size = Math.Max(LogicalPixelsToDevice(14), iconSize / 3);
-            var checkBounds = new Rectangle(
-                iconBounds.Right - size + LogicalPixelsToDevice(2),
-                iconBounds.Top - LogicalPixelsToDevice(2),
-                size,
-                size);
-            Color fillColor = selected
-                ? theme.AccentColor
-                : ThemeDrawing.WithAlpha(theme.MainPanelColor, 205);
-            using (var fill = new SolidBrush(fillColor))
-            using (var outline = new Pen(
-                selected ? theme.AccentColor : theme.BorderColor,
-                Math.Max(1f, LogicalPixelsToDevice(1))))
+            Font fontToUse = uiBoldFont ?? iconFont ?? Font;
+            using (var textBrush = new SolidBrush(textColor))
+            using (var sf = new StringFormat(StringFormat.GenericTypographic))
             {
-                graphics.FillEllipse(fill, checkBounds);
-                graphics.DrawEllipse(outline, checkBounds);
-            }
-
-            if (!selected)
-                return;
-
-            Color checkColor = ThemeDrawing.IsDark(theme.AccentColor)
-                ? Color.White
-                : Color.Black;
-            using (var pen = new Pen(
-                checkColor,
-                Math.Max(1.5f, LogicalPixelsToDevice(1))))
-            {
-                pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
-                pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
-                pen.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
-                graphics.DrawLines(pen, new[]
-                {
-                    new Point(
-                        checkBounds.Left + checkBounds.Width / 4,
-                        checkBounds.Top + checkBounds.Height / 2),
-                    new Point(
-                        checkBounds.Left + checkBounds.Width / 2 - 1,
-                        checkBounds.Bottom - checkBounds.Height / 4),
-                    new Point(
-                        checkBounds.Right - checkBounds.Width / 5,
-                        checkBounds.Top + checkBounds.Height / 4)
-                });
+                sf.Alignment = StringAlignment.Center;
+                sf.LineAlignment = StringAlignment.Center;
+                sf.Trimming = StringTrimming.EllipsisCharacter;
+                sf.FormatFlags = StringFormatFlags.NoWrap;
+                graphics.DrawString(text, fontToUse, textBrush, (RectangleF)bounds, sf);
             }
         }
 
@@ -3082,6 +3415,8 @@ namespace NoFences
             titleFont = null;
             iconFont?.Dispose();
             iconFont = null;
+            uiBoldFont?.Dispose();
+            uiBoldFont = null;
             standardIconTextFormat.Dispose();
             expandedIconTextFormat.Dispose();
 
@@ -3328,6 +3663,452 @@ namespace NoFences
             }
 
             Invalidate();
+        }
+
+        /// <summary>
+        /// 鼠标按下：检测是否在图标上按下左键以准备手动拖拽操作。
+        /// </summary>
+        private void FenceWindow_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || isIconManagementMode || lockedToolStripMenuItem.Checked)
+                return;
+
+            string hitPath = null;
+            if (!string.IsNullOrEmpty(selectedItem) &&
+                entryHitBounds.TryGetValue(selectedItem, out Rectangle selBounds) &&
+                selBounds.Contains(e.Location))
+            {
+                hitPath = selectedItem;
+            }
+            else
+            {
+                foreach (KeyValuePair<string, Rectangle> pair in entryHitBounds)
+                {
+                    if (pair.Value.Contains(e.Location))
+                    {
+                        hitPath = pair.Key;
+                        break;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(hitPath))
+            {
+                dragCandidatePath = hitPath;
+                dragStartPoint = e.Location;
+                isDraggingItem = false;
+                suppressNextClick = false;
+            }
+            else
+            {
+                dragCandidatePath = null;
+            }
+        }
+
+        /// <summary>
+        /// 鼠标释放：提交手动拖拽结果（同分区排序、跨分区移动、拖出分区移除）。
+        /// </summary>
+        private void FenceWindow_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left)
+                return;
+
+            if (isDraggingItem)
+            {
+                Capture = false;
+                isDraggingItem = false;
+                Cursor = Cursors.Default;
+                string draggedPath = dragCandidatePath;
+                dragCandidatePath = null;
+
+                int targetDropIndex = dropIndicatorIndex;
+                ClearDropIndicator();
+
+                FenceWindow targetFence = dragHoverTarget;
+                if (targetFence != null && targetFence != this)
+                {
+                    targetDropIndex = targetFence.dropIndicatorIndex;
+                    targetFence.ClearDropIndicator();
+                }
+                dragHoverTarget = null;
+
+                if (!string.IsNullOrEmpty(draggedPath))
+                {
+                    if (targetFence == this)
+                    {
+                        // Case A: 同一分区内手动拖拽排序
+                        string error;
+                        if (FenceManager.Instance.TryReorderEntry(fenceInfo, draggedPath, targetDropIndex, out error))
+                        {
+                            Refresh();
+                        }
+                        else if (!string.IsNullOrEmpty(error))
+                        {
+                            MessageBox.Show(this, error, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    }
+                    else if (targetFence != null && !targetFence.IsDisposed)
+                    {
+                        // Case B: 拖动到其他分区移动图标
+                        string error;
+                        if (FenceManager.Instance.TryMoveEntry(
+                            this.fenceInfo,
+                            targetFence.fenceInfo,
+                            draggedPath,
+                            targetDropIndex,
+                            out error))
+                        {
+                            if (selectedItem == draggedPath) selectedItem = null;
+                            if (hoveringItem == draggedPath) hoveringItem = null;
+                            thumbnailProvider.Remove(draggedPath);
+                            this.Refresh();
+                            targetFence.Refresh();
+                        }
+                        else if (!string.IsNullOrEmpty(error))
+                        {
+                            MessageBox.Show(
+                                this,
+                                error,
+                                ThemeText.Key(NoFences.Localization.LKeys.MoveItemTitle),
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Warning);
+                        }
+                    }
+                    else
+                    {
+                        // Case C: 拖出分区（外部/桌面释放）→ 从分区移除，受托管文件自动恢复到原桌面位置
+                        string error;
+                        if (FenceManager.Instance.TryRemoveEntry(fenceInfo, draggedPath, out error))
+                        {
+                            thumbnailProvider.Remove(draggedPath);
+                            if (selectedItem == draggedPath) selectedItem = null;
+                            if (hoveringItem == draggedPath) hoveringItem = null;
+                            Refresh();
+                        }
+                        else if (!string.IsNullOrEmpty(error))
+                        {
+                            MessageBox.Show(this, error, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    }
+                }
+
+                if (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition))
+                {
+                    Minify();
+                }
+
+                Invalidate();
+                return;
+            }
+
+            dragCandidatePath = null;
+        }
+
+        /// <summary>拦截键盘消息：按下 Esc 键时取消当前图标拖拽。</summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape && isDraggingItem)
+            {
+                CancelItemDrag();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        /// <summary>取消当前正在进行的图标拖拽操作并重置所有指示状态。</summary>
+        private void CancelItemDrag()
+        {
+            if (isDraggingItem)
+            {
+                Capture = false;
+                isDraggingItem = false;
+                Cursor = Cursors.Default;
+                dragCandidatePath = null;
+                ClearDropIndicator();
+                if (dragHoverTarget != null && dragHoverTarget != this)
+                {
+                    dragHoverTarget.ClearDropIndicator();
+                }
+                dragHoverTarget = null;
+                Invalidate();
+            }
+        }
+
+        /// <summary>处理图标拖拽移动过程中的目标判定、跨分区悬停与插入指示线计算。</summary>
+        private void HandleItemDragMove(Point localPoint)
+        {
+            Point screenPoint = Cursor.Position;
+            FenceWindow target = FindFenceAtScreenPoint(screenPoint);
+
+            // 若目标分区处于锁定状态，则不接受拖放放置
+            if (target != null && target.lockedToolStripMenuItem.Checked)
+            {
+                target = null;
+            }
+
+            if (target == this)
+            {
+                if (dragHoverTarget != null && dragHoverTarget != this)
+                {
+                    dragHoverTarget.ClearDropIndicator();
+                }
+                dragHoverTarget = this;
+                Point clientPt = PointToClient(screenPoint);
+                int targetIdx = GetDropTargetIndex(clientPt);
+                SetDropTargetIndex(targetIdx);
+            }
+            else if (target != null)
+            {
+                if (dragHoverTarget != null && dragHoverTarget != target)
+                {
+                    dragHoverTarget.ClearDropIndicator();
+                }
+                ClearDropIndicator();
+                dragHoverTarget = target;
+                if (target.minifyToolStripMenuItem.Checked && target.isMinified)
+                {
+                    target.ExpandFromMinified();
+                }
+                Point clientPt = target.PointToClient(screenPoint);
+                int targetIdx = target.GetDropTargetIndex(clientPt);
+                target.SetDropTargetIndex(targetIdx);
+            }
+            else
+            {
+                if (dragHoverTarget != null)
+                {
+                    dragHoverTarget.ClearDropIndicator();
+                    dragHoverTarget = null;
+                }
+                ClearDropIndicator();
+            }
+
+            Invalidate();
+        }
+
+        /// <summary>根据屏幕全局坐标查找位于光标下方的栅栏窗口（重叠时优先选取 Z 轴顶层窗口）。</summary>
+        private FenceWindow FindFenceAtScreenPoint(Point screenPoint)
+        {
+            IntPtr hwnd = WindowFromPoint(new POINT(screenPoint.X, screenPoint.Y));
+            if (hwnd != IntPtr.Zero)
+            {
+                foreach (Form form in Application.OpenForms)
+                {
+                    if (form is FenceWindow fence &&
+                        !fence.IsDisposed &&
+                        !fence.fenceRemoved &&
+                        fence.Visible &&
+                        fence.Handle == hwnd)
+                    {
+                        return fence;
+                    }
+                }
+            }
+
+            if (Bounds.Contains(screenPoint))
+                return this;
+
+            foreach (Form form in Application.OpenForms)
+            {
+                if (form is FenceWindow fence &&
+                    fence != this &&
+                    fence.Visible &&
+                    !fence.IsDisposed &&
+                    !fence.fenceRemoved &&
+                    fence.Bounds.Contains(screenPoint))
+                {
+                    return fence;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>根据客户区坐标计算当前图标网格中的插入位置索引（0..Files.Count）。</summary>
+        public int GetDropTargetIndex(Point clientPoint)
+        {
+            if (fenceInfo?.Files == null || fenceInfo.Files.Count == 0)
+                return 0;
+
+            int count = fenceInfo.Files.Count;
+            int managementFooterHeight = isIconManagementMode ? GetIconManagementFooterHeight() : 0;
+            Rectangle contentViewport = GetContentViewport(managementFooterHeight);
+
+            int layoutViewportWidth = (isMinified || isAnimatingMinify) && IsVerticalTitleBar
+                ? Math.Max(contentViewport.Width, prevWidth - titleHeight)
+                : contentViewport.Width;
+
+            int x = itemPadding;
+            int y = itemPadding;
+
+            int bestIndex = count;
+            int bestDistSq = int.MaxValue;
+
+            for (int i = 0; i < count; i++)
+            {
+                int drawX = contentViewport.X + x;
+                int drawY = contentViewport.Y + y - scrollOffset;
+                var itemRect = new Rectangle(drawX, drawY, itemWidth, itemHeight);
+
+                // 如果光标在该条目所在的水平行范围内
+                if (clientPoint.Y >= itemRect.Top - itemPadding / 2 &&
+                    clientPoint.Y <= itemRect.Bottom + itemPadding / 2)
+                {
+                    if (clientPoint.X < itemRect.Left + itemRect.Width / 2)
+                        return i;
+                    bestIndex = i + 1;
+                }
+
+                int centerX = itemRect.Left + itemRect.Width / 2;
+                int centerY = itemRect.Top + itemRect.Height / 2;
+                int distSq = (clientPoint.X - centerX) * (clientPoint.X - centerX) +
+                             (clientPoint.Y - centerY) * (clientPoint.Y - centerY);
+                if (distSq < bestDistSq)
+                {
+                    bestDistSq = distSq;
+                    bestIndex = clientPoint.X <= centerX ? i : i + 1;
+                }
+
+                x += itemWidth + itemPadding;
+                if (x + itemWidth > layoutViewportWidth)
+                {
+                    x = itemPadding;
+                    y += itemHeight + itemPadding;
+                }
+            }
+
+            if (clientPoint.Y < contentViewport.Y)
+                return 0;
+            if (clientPoint.Y > contentViewport.Bottom)
+                return count;
+
+            return Math.Max(0, Math.Min(count, bestIndex));
+        }
+
+        /// <summary>设置本分区在拖拽悬停时的目标插入位置指示线索引。</summary>
+        public void SetDropTargetIndex(int index)
+        {
+            if (dropIndicatorIndex != index)
+            {
+                dropIndicatorIndex = index;
+                Invalidate();
+            }
+        }
+
+        /// <summary>清除本分区的拖拽插入指示线并触发重绘。</summary>
+        public void ClearDropIndicator()
+        {
+            if (dropIndicatorIndex != -1)
+            {
+                dropIndicatorIndex = -1;
+                Invalidate();
+            }
+        }
+
+        /// <summary>在图标网格中绘制高亮插入指示线。</summary>
+        private void DrawDropIndicator(Graphics graphics, ThemeDefinition theme, Rectangle contentViewport)
+        {
+            if (dropIndicatorIndex < 0 || fenceInfo?.Files == null)
+                return;
+
+            int count = fenceInfo.Files.Count;
+            int index = Math.Max(0, Math.Min(count, dropIndicatorIndex));
+
+            int layoutViewportWidth = (isMinified || isAnimatingMinify) && IsVerticalTitleBar
+                ? Math.Max(contentViewport.Width, prevWidth - titleHeight)
+                : contentViewport.Width;
+
+            int x = itemPadding;
+            int y = itemPadding;
+            int targetX = contentViewport.X + x;
+            int targetY = contentViewport.Y + y - scrollOffset;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (i == index)
+                {
+                    targetX = contentViewport.X + x - itemPadding / 2;
+                    targetY = contentViewport.Y + y - scrollOffset;
+                    break;
+                }
+
+                x += itemWidth + itemPadding;
+                if (x + itemWidth > layoutViewportWidth)
+                {
+                    x = itemPadding;
+                    y += itemHeight + itemPadding;
+                }
+
+                if (i + 1 == index)
+                {
+                    targetX = contentViewport.X + x - itemPadding / 2;
+                    targetY = contentViewport.Y + y - scrollOffset;
+                }
+            }
+
+            Color accentColor = theme.AccentColor;
+            int barWidth = Math.Max(3, LogicalPixelsToDevice(3));
+            int barHeight = Math.Min(itemHeight, contentViewport.Height);
+            int barX = Math.Max(contentViewport.Left, Math.Min(contentViewport.Right - barWidth, targetX - barWidth / 2));
+            int barY = Math.Max(contentViewport.Top, targetY);
+
+            var barRect = new Rectangle(barX, barY, barWidth, barHeight);
+            using (var brush = new SolidBrush(accentColor))
+            using (var glowPen = new Pen(ThemeDrawing.WithAlpha(accentColor, 90), barWidth + LogicalPixelsToDevice(4)))
+            {
+                glowPen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                glowPen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                graphics.DrawLine(glowPen, barRect.X + barWidth / 2, barRect.Y + 2, barRect.X + barWidth / 2, barRect.Bottom - 2);
+
+                using (var path = ThemeDrawing.CreateRoundedRectangle(barRect, barWidth))
+                {
+                    graphics.FillPath(brush, path);
+                }
+            }
+        }
+
+        /// <summary>绘制拖拽中跟随鼠标移动的半透明幽灵图标。</summary>
+        private void DrawDraggingGhost(Graphics graphics, ThemeDefinition theme)
+        {
+            if (!isDraggingItem || string.IsNullOrEmpty(dragCandidatePath))
+                return;
+
+            var entry = FenceEntry.FromPath(dragCandidatePath);
+            if (entry == null)
+                return;
+
+            Icon icon = entry.ExtractIcon(thumbnailProvider);
+            if (icon == null)
+                return;
+
+            Point mousePos = PointToClient(Cursor.Position);
+            int ghostSize = iconSize;
+            int ghostX = mousePos.X - ghostSize / 2;
+            int ghostY = mousePos.Y - ghostSize / 2;
+            var ghostRect = new Rectangle(ghostX, ghostY, ghostSize, ghostSize);
+
+            using (var shadowBrush = new SolidBrush(Color.FromArgb(50, 0, 0, 0)))
+            {
+                graphics.FillEllipse(shadowBrush, ghostRect.X + 2, ghostRect.Bottom - ghostSize / 4, ghostSize - 4, ghostSize / 4);
+            }
+
+            var matrix = new System.Drawing.Imaging.ColorMatrix
+            {
+                Matrix33 = 0.72f
+            };
+            using (var imgAttr = new System.Drawing.Imaging.ImageAttributes())
+            {
+                imgAttr.SetColorMatrix(matrix, System.Drawing.Imaging.ColorMatrixFlag.Default, System.Drawing.Imaging.ColorAdjustType.Bitmap);
+
+                using (Bitmap bmp = icon.ToBitmap())
+                {
+                    graphics.DrawImage(
+                        bmp,
+                        ghostRect,
+                        0, 0, bmp.Width, bmp.Height,
+                        GraphicsUnit.Pixel,
+                        imgAttr);
+                }
+            }
         }
 
         /// <summary>检查路径是否存在（文件或文件夹）。</summary>

@@ -45,6 +45,13 @@ namespace NoFences.Localization
         public const string MenuTitleSize = "menu.titleSize";
         public const string MenuScale = "menu.scale";
         public const string MenuIconManagement = "menu.iconManagement";
+        public const string MenuSort = "menu.sort";
+        public const string MenuSortByName = "menu.sort.name";
+        public const string MenuSortBySize = "menu.sort.size";
+        public const string MenuSortByType = "menu.sort.type";
+        public const string MenuSortByCreated = "menu.sort.created";
+        public const string MenuSortByModified = "menu.sort.modified";
+        public const string MoveItemTitle = "msg.moveItem.title";
         public const string MenuSettings = "menu.settings";
         public const string MenuTheme = "menu.theme";
         public const string MenuDarkMode = "menu.darkMode";

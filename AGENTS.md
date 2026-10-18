@@ -15,7 +15,7 @@
 ## 架构
 - 通过命名 `Mutex("No_fences")` 强制单实例，代码在 [`Program.cs`](NoFences/Program.cs:25)。
 - 栅栏元数据持久化路径：`%LocalAppData%/NoFences/<guid>/__fence_metadata.xml`。
-- 栅栏窗口是无边框的，通过 [`DesktopUtil.GlueToDesktop`](NoFences/Win32/DesktopUtil.cs:49) 将 `GWL_HWNDPARENT` 设为 `Progman` 窗口句柄，使其显示在桌面图标下方、能在 Win+D 后继续存在。同时通过 `WS_EX_TOOLWINDOW` 从 Alt+Tab 隐藏，并在 `WM_SETFOCUS` 时推至 `HWND_BOTTOM` 阻止获取焦点。
+- 栅栏窗口是无边框的，通过 [`DesktopUtil.GlueToDesktop`](NoFences/Win32/DesktopUtil.cs:49) 将 `GWL_HWNDPARENT` 设为 `Progman` 窗口句柄，使其能在 Win+D 后继续存在。同时通过 `WS_EX_TOOLWINDOW` 从 Alt+Tab 隐藏。点击时通过 `WM_MOUSEACTIVATE` 将当前栅栏提至 `HWND_TOP`，确保多个分区重叠时点击能稳定交互，切勿在 `WM_SETFOCUS` 时推至 `HWND_BOTTOM`（会导致重叠分区相互交替沉底死循环）。
 - DPI 感知模式为 `PerMonitorV2`，配置在 [`App.config`](NoFences/App.config:7)；`FenceInfo.Width/Height` 保存的是 DPI 缩放后的值，`TitleHeight` 为逻辑像素值。
 - 无边框窗口的拖拽/调整大小通过 [`WndProc`](NoFences/FenceWindow.cs:302) 中的 `WM_NCHITTEST` (0x84) 实现：标题栏区域返回 `HTCAPTION`，四角和边缘 10px 热区返回对应 resize 方向。**锁定状态或鼠标右键按下时**不处理拖拽/调整大小。
 - [`ThumbnailProvider`](NoFences/Util/ThumbnailProvider.cs) 为图片文件异步生成缩略图：先立即显示关联图标，然后异步替换为缩略图（`IconThumbnailLoaded` 事件触发 `Invalidate()`）。通过 `SemaphoreSlim(4)` 限制并发解码，`TargetSize` 支持运行时动态更新以匹配 DPI 变化。
