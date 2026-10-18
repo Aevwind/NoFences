@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace NoFences.Win32
 {
@@ -33,17 +34,31 @@ namespace NoFences.Win32
         private static Icon LinkOverlay => LinkOverlayIcon.Value;
 
         /// <summary>
-        /// 通过 Shell 图像工厂获取指定路径的目标尺寸图标，
+        /// 通过 Shell 图像工厂或快捷方式解析获取指定路径的目标尺寸图标，
         /// 快捷方式会重新叠加系统箭头覆盖层。
         /// </summary>
         public static Icon GetLargeIcon(string path, int targetSize)
         {
+            if (TryGetUrlShortcutIconLocation(path, out string iconFile, out int iconIndex))
+            {
+                Icon customIcon = ExtractCustomShortcutIcon(path, iconFile, iconIndex, targetSize);
+                if (customIcon != null)
+                    return customIcon;
+            }
+
             return GetImageFactoryIcon(path, targetSize) ?? GetFallbackIcon(path);
         }
 
-        /// <summary>通过 SHGetFileInfo 快速获取用于异步加载前占位的 Shell 图标。</summary>
+        /// <summary>通过 SHGetFileInfo 或快捷方式解析快速获取用于异步加载前占位的 Shell 图标。</summary>
         public static Icon GetFallbackIcon(string path)
         {
+            if (TryGetUrlShortcutIconLocation(path, out string iconFile, out int iconIndex))
+            {
+                Icon customIcon = ExtractCustomShortcutIcon(path, iconFile, iconIndex, 32);
+                if (customIcon != null)
+                    return customIcon;
+            }
+
             var info = new SHFILEINFO();
             IntPtr result = SHGetFileInfo(
                 path,
@@ -83,6 +98,150 @@ namespace NoFences.Win32
         }
 
         /// <summary>
+        /// 尝试从 .url 互联网快捷方式（如 Steam 游戏桌面图标）中解析自定义图标文件路径及索引。
+        /// </summary>
+        private static bool TryGetUrlShortcutIconLocation(string path, out string iconFile, out int iconIndex)
+        {
+            iconFile = null;
+            iconIndex = 0;
+
+            if (string.IsNullOrEmpty(path))
+                return false;
+
+            string extension = Path.GetExtension(path);
+            if (!string.Equals(extension, ".url", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!File.Exists(path))
+                return false;
+
+            try
+            {
+                var sb = new StringBuilder(1024);
+                GetPrivateProfileString("InternetShortcut", "IconFile", string.Empty, sb, (uint)sb.Capacity, path);
+                string file = sb.ToString();
+
+                var sbIndex = new StringBuilder(64);
+                GetPrivateProfileString("InternetShortcut", "IconIndex", "0", sbIndex, (uint)sbIndex.Capacity, path);
+                string indexStr = sbIndex.ToString();
+
+                // 若 GetPrivateProfileString 未读取到，采用逐行文本读取作为后备
+                if (string.IsNullOrWhiteSpace(file))
+                {
+                    foreach (string line in File.ReadLines(path))
+                    {
+                        string trimmed = line.Trim();
+                        if (trimmed.StartsWith("IconFile=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            file = trimmed.Substring(9);
+                        }
+                        else if (trimmed.StartsWith("IconIndex=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            indexStr = trimmed.Substring(10);
+                        }
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(file))
+                    return false;
+
+                file = file.Trim('"', '\'', ' ', '\t', '\r', '\n');
+                file = Environment.ExpandEnvironmentVariables(file);
+
+                if (!Path.IsPathRooted(file))
+                {
+                    string directory = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        string combined = Path.Combine(directory, file);
+                        if (File.Exists(combined))
+                            file = combined;
+                    }
+                }
+
+                if (!File.Exists(file))
+                    return false;
+
+                iconFile = file;
+                int parsedIndex;
+                if (int.TryParse(indexStr, out parsedIndex))
+                    iconIndex = parsedIndex;
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 从快捷方式指定的图标文件（.ico、.exe、.dll 等）按目标尺寸提取图标，并重新叠加快捷方式箭头覆盖层。
+        /// </summary>
+        private static Icon ExtractCustomShortcutIcon(string shortcutPath, string iconFile, int iconIndex, int targetSize)
+        {
+            try
+            {
+                int safeSize = Math.Max(16, targetSize);
+                var phicon = new IntPtr[1];
+                var piconid = new IntPtr[1];
+                uint count = PrivateExtractIcons(iconFile, iconIndex, safeSize, safeSize, phicon, piconid, 1, 0);
+
+                if (count > 0 && phicon[0] != IntPtr.Zero)
+                {
+                    IntPtr hIcon = phicon[0];
+                    try
+                    {
+                        using (var rawIcon = (Icon)Icon.FromHandle(hIcon).Clone())
+                        using (var bitmap = rawIcon.ToBitmap())
+                        {
+                            ApplyShortcutOverlay(shortcutPath, bitmap);
+
+                            IntPtr iconHandle = bitmap.GetHicon();
+                            try
+                            {
+                                return (Icon)Icon.FromHandle(iconHandle).Clone();
+                            }
+                            finally
+                            {
+                                DestroyIcon(iconHandle);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        DestroyIcon(hIcon);
+                    }
+                }
+
+                // 若 PrivateExtractIcons 提取失败，对 .ico 文件尝试 System.Drawing.Icon 构造
+                if (string.Equals(Path.GetExtension(iconFile), ".ico", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var rawIcon = new Icon(iconFile, safeSize, safeSize))
+                    using (var bitmap = rawIcon.ToBitmap())
+                    {
+                        ApplyShortcutOverlay(shortcutPath, bitmap);
+
+                        IntPtr iconHandle = bitmap.GetHicon();
+                        try
+                        {
+                            return (Icon)Icon.FromHandle(iconHandle).Clone();
+                        }
+                        finally
+                        {
+                            DestroyIcon(iconHandle);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// 通过 IShellItemImageFactory 按目标尺寸提取高分辨率图标。
         /// 此方法可能访问磁盘，应从后台线程调用。
         /// </summary>
@@ -113,7 +272,13 @@ namespace NoFences.Win32
                     SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY | SIIGBF_SCALEUP,
                     out bitmapHandle) < 0 || bitmapHandle == IntPtr.Zero)
                 {
-                    return null;
+                    if (imageFactory.GetImage(
+                        requestedSize,
+                        SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP,
+                        out bitmapHandle) < 0 || bitmapHandle == IntPtr.Zero)
+                    {
+                        return null;
+                    }
                 }
 
                 using (var bitmap = CreateBitmapWithAlpha(bitmapHandle))
@@ -426,6 +591,26 @@ namespace NoFences.Win32
 
         [DllImport("user32.dll")]
         private static extern uint GetDpiForSystem();
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint GetPrivateProfileString(
+            string lpAppName,
+            string lpKeyName,
+            string lpDefault,
+            StringBuilder lpReturnedString,
+            uint nSize,
+            string lpFileName);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint PrivateExtractIcons(
+            string szFileName,
+            int nIconIndex,
+            int cxIcon,
+            int cyIcon,
+            IntPtr[] phicon,
+            IntPtr[] piconid,
+            uint nIcons,
+            uint flags);
 
         // 文件夹图标常量
         private const uint SHSIID_FOLDER = 0x3;
