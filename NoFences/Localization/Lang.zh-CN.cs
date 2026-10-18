@@ -62,6 +62,14 @@ namespace NoFences.Localization
             d[LKeys.TitleSettingsAlignRight] = "靠右";
             d[LKeys.TitleSettingsSizeTitle] = "标题栏大小";
             d[LKeys.TitleSettingsSizeDesc] = "调整标题栏的尺寸（20px - 100px）";
+            d[LKeys.TitleSettingsPaddingTitle] = "内边距";
+            d[LKeys.TitleSettingsPaddingDesc] = "调整标题文本与边缘的内边距距离（0px - 50px）";
+            d[LKeys.TitleSettingsPaddingXTitle] = "左右内边距";
+            d[LKeys.TitleSettingsPaddingXDesc] = "调整标题文本与左右边缘的距离（0px - 50px）";
+            d[LKeys.TitleSettingsPaddingYTitle] = "上下内边距";
+            d[LKeys.TitleSettingsPaddingYDesc] = "调整标题文本与上下边缘的距离，标题栏高度自适应扩展（0px - 50px）";
+            d[LKeys.TitleSettingsLineHeightTitle] = "文字行高";
+            d[LKeys.TitleSettingsLineHeightDesc] = "调整标题文本的行高倍数与垂直字距（1.0 - 2.5）";
 
             // 4. 图标多选管理与消息提示框
             d[LKeys.IconManagementHint] = "选择要移除的图标";

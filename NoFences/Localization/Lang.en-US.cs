@@ -62,6 +62,14 @@ namespace NoFences.Localization
             d[LKeys.TitleSettingsAlignRight] = "Right";
             d[LKeys.TitleSettingsSizeTitle] = "Title bar size";
             d[LKeys.TitleSettingsSizeDesc] = "Adjust the size of the title bar (20px - 100px)";
+            d[LKeys.TitleSettingsPaddingTitle] = "Padding";
+            d[LKeys.TitleSettingsPaddingDesc] = "Adjust title text inner padding from edges (0px - 50px)";
+            d[LKeys.TitleSettingsPaddingXTitle] = "Horizontal padding";
+            d[LKeys.TitleSettingsPaddingXDesc] = "Adjust distance from left and right edges (0px - 50px)";
+            d[LKeys.TitleSettingsPaddingYTitle] = "Vertical padding";
+            d[LKeys.TitleSettingsPaddingYDesc] = "Adjust distance from top and bottom edges; title height adapts automatically (0px - 50px)";
+            d[LKeys.TitleSettingsLineHeightTitle] = "Line height";
+            d[LKeys.TitleSettingsLineHeightDesc] = "Adjust title text line height multiplier (1.0 - 2.5)";
 
             // 4. Icon management and message dialogs
             d[LKeys.IconManagementHint] = "Select icons to remove";

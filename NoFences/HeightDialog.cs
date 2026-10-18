@@ -23,24 +23,38 @@ namespace NoFences
         public const int MinTitleHeight = 20;
         public const int MaxTitleHeight = 100;
 
+        public const int DefaultTitlePaddingX = 10;
+        public const int DefaultTitlePaddingY = 6;
+        public const int MinTitlePadding = 0;
+        public const int MaxTitlePadding = 50;
+
         private SettingsPalette palette;
         private FenceTitlePosition selectedPosition;
         private FenceTitleTextAlignment selectedAlignment;
         private int selectedHeight;
+        private int selectedPaddingX;
+        private int selectedPaddingY;
 
         private int hoveredCardIndex = -1;
         private bool isAlignDropdownHovered;
-        private bool isSliderHovered;
-        private bool isSliderDragging;
+
+        private enum ActiveSlider { None, Size, PaddingX, PaddingY }
+        private ActiveSlider hoveredSlider = ActiveSlider.None;
+        private ActiveSlider activeSlider = ActiveSlider.None;
 
         private Rectangle[] cardHitRects = new Rectangle[4];
         private Rectangle alignDropdownRect;
-        private Rectangle sliderTrackRect;
+        private Rectangle sizeSliderTrackRect;
+        private Rectangle paddingXSliderTrackRect;
+        private Rectangle paddingYSliderTrackRect;
 
         private readonly SettingsActionButton btnRestore;
         private readonly SettingsActionButton btnOk;
         private readonly SettingsActionButton btnCancel;
         private ToolStripDropDown alignmentPopup;
+
+        /// <summary>当标题设置发生任意变更时触发实时预览事件（位置、对齐方式、标题栏大小、左右内边距、上下内边距）。</summary>
+        public event Action<FenceTitlePosition, FenceTitleTextAlignment, int, int, int> PreviewChanged;
 
         /// <summary>用户选择的标题栏大小（逻辑像素，20~100）。</summary>
         public int TitleHeight => selectedHeight;
@@ -51,10 +65,21 @@ namespace NoFences
         /// <summary>用户选择的标题文本对齐方式（靠左/居中/靠右）。</summary>
         public FenceTitleTextAlignment TitleTextAlignment => selectedAlignment;
 
+        /// <summary>用户选择的标题栏左右内边距（逻辑像素，0~50）。</summary>
+        public int TitlePaddingX => selectedPaddingX;
+
+        /// <summary>用户选择的标题栏上下内边距（逻辑像素，0~50）。</summary>
+        public int TitlePaddingY => selectedPaddingY;
+
+        /// <summary>向后兼容保留的单值内边距属性（等同于左右内边距 TitlePaddingX）。</summary>
+        public int TitlePadding => selectedPaddingX;
+
         public HeightDialog(
             int initialHeight,
             FenceTitlePosition initialPosition = FenceTitlePosition.Top,
-            FenceTitleTextAlignment initialAlignment = FenceTitleTextAlignment.Center)
+            FenceTitleTextAlignment initialAlignment = FenceTitleTextAlignment.Center,
+            int initialPaddingX = DefaultTitlePaddingX,
+            int initialPaddingY = DefaultTitlePaddingY)
         {
             InitializeComponent();
             SetStyle(
@@ -64,9 +89,12 @@ namespace NoFences
                 ControlStyles.UserPaint,
                 true);
 
-            selectedHeight = ClampHeight(initialHeight);
             selectedPosition = initialPosition;
             selectedAlignment = initialAlignment;
+            selectedPaddingX = ClampPadding(initialPaddingX);
+            selectedPaddingY = ClampPadding(initialPaddingY);
+            selectedHeight = ClampHeight(initialHeight);
+            EnsureAdaptedTitleHeight();
 
             btnRestore = new SettingsActionButton { IsPrimary = false };
             btnOk = new SettingsActionButton { IsPrimary = true };
@@ -173,13 +201,6 @@ namespace NoFences
             if (btnRestore == null || btnOk == null || btnCancel == null)
                 return;
 
-            int targetClientW = S(556);
-            int targetClientH = S(368);
-            if (ClientSize.Width != targetClientW || ClientSize.Height != targetClientH)
-            {
-                ClientSize = new Size(targetClientW, targetClientH);
-            }
-
             int padH = S(24);
             int cardTop = S(64);
             int cardW = S(104);
@@ -202,19 +223,43 @@ namespace NoFences
                 dropdownW,
                 dropdownH);
 
+            int sliderW = S(185);
+            int sliderH = S(28);
+            int valueLabelW = S(48);
+
             int row3Top = S(242);
             int row3Height = S(64);
-            int valueLabelW = S(46);
-            int sliderW = S(190);
-            int sliderH = S(28);
-            sliderTrackRect = new Rectangle(
+            sizeSliderTrackRect = new Rectangle(
                 ClientSize.Width - padH - valueLabelW - S(8) - sliderW,
                 row3Top + (row3Height - sliderH) / 2,
                 sliderW,
                 sliderH);
 
-            int footerTop = S(308);
-            int footerH = ClientSize.Height - footerTop;
+            int row4Top = S(306);
+            int row4Height = S(64);
+            paddingXSliderTrackRect = new Rectangle(
+                ClientSize.Width - padH - valueLabelW - S(8) - sliderW,
+                row4Top + (row4Height - sliderH) / 2,
+                sliderW,
+                sliderH);
+
+            int row5Top = S(370);
+            int row5Height = S(64);
+            paddingYSliderTrackRect = new Rectangle(
+                ClientSize.Width - padH - valueLabelW - S(8) - sliderW,
+                row5Top + (row5Height - sliderH) / 2,
+                sliderW,
+                sliderH);
+
+            int footerTop = S(434);
+            int footerH = S(60);
+            int targetClientW = S(556);
+            int targetClientH = footerTop + footerH;
+            if (ClientSize.Width != targetClientW || ClientSize.Height != targetClientH)
+            {
+                ClientSize = new Size(targetClientW, targetClientH);
+            }
+
             int btnH = S(34);
             int btnY = footerTop + (footerH - btnH) / 2;
             int restoreW = S(104);
@@ -362,7 +407,7 @@ namespace NoFences
                 // 3. 标题栏大小区域（滑块 + px 数值显示）
                 // =========================================================
                 int row3Top = div2Y + 1;
-                int row3TextW = Math.Max(100, sliderTrackRect.Left - padH - S(16));
+                int row3TextW = Math.Max(100, sizeSliderTrackRect.Left - padH - S(16));
                 TextRenderer.DrawText(
                     g,
                     ThemeText.Key(LKeys.TitleSettingsSizeTitle),
@@ -379,25 +424,106 @@ namespace NoFences
                     palette.SecondaryText,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
-                DrawSizeSlider(g, sliderTrackRect);
+                float sizeRatio = (selectedHeight - MinTitleHeight) / (float)(MaxTitleHeight - MinTitleHeight);
+                DrawCustomSlider(g, sizeSliderTrackRect, sizeRatio, hoveredSlider == ActiveSlider.Size, activeSlider == ActiveSlider.Size);
 
-                var valRect = new Rectangle(
-                    sliderTrackRect.Right + S(6),
+                var sizeValRect = new Rectangle(
+                    sizeSliderTrackRect.Right + S(6),
                     row3Top,
-                    ClientSize.Width - padH - (sliderTrackRect.Right + S(6)),
+                    ClientSize.Width - padH - (sizeSliderTrackRect.Right + S(6)),
                     S(64));
                 TextRenderer.DrawText(
                     g,
                     selectedHeight + "px",
                     valueFont,
-                    valRect,
+                    sizeValRect,
+                    palette.PrimaryText,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                int div3Y = S(305);
+                g.DrawLine(divPen, 0, div3Y, ClientSize.Width, div3Y);
+
+                // =========================================================
+                // 4. 左右内边距区域（滑块 + px 数值显示）
+                // =========================================================
+                int row4Top = div3Y + 1;
+                int row4TextW = Math.Max(100, paddingXSliderTrackRect.Left - padH - S(16));
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsPaddingXTitle),
+                    titleFont,
+                    new Rectangle(padH, row4Top + S(12), row4TextW, S(22)),
+                    palette.PrimaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsPaddingXDesc),
+                    descFont,
+                    new Rectangle(padH, row4Top + S(34), row4TextW, S(20)),
+                    palette.SecondaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                float padXRatio = (selectedPaddingX - MinTitlePadding) / (float)(MaxTitlePadding - MinTitlePadding);
+                DrawCustomSlider(g, paddingXSliderTrackRect, padXRatio, hoveredSlider == ActiveSlider.PaddingX, activeSlider == ActiveSlider.PaddingX);
+
+                var padXValRect = new Rectangle(
+                    paddingXSliderTrackRect.Right + S(6),
+                    row4Top,
+                    ClientSize.Width - padH - (paddingXSliderTrackRect.Right + S(6)),
+                    S(64));
+                TextRenderer.DrawText(
+                    g,
+                    selectedPaddingX + "px",
+                    valueFont,
+                    padXValRect,
+                    palette.PrimaryText,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                int div4Y = S(369);
+                g.DrawLine(divPen, 0, div4Y, ClientSize.Width, div4Y);
+
+                // =========================================================
+                // 5. 上下内边距区域（滑块 + px 数值显示）
+                // =========================================================
+                int row5Top = div4Y + 1;
+                int row5TextW = Math.Max(100, paddingYSliderTrackRect.Left - padH - S(16));
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsPaddingYTitle),
+                    titleFont,
+                    new Rectangle(padH, row5Top + S(12), row5TextW, S(22)),
+                    palette.PrimaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                TextRenderer.DrawText(
+                    g,
+                    ThemeText.Key(LKeys.TitleSettingsPaddingYDesc),
+                    descFont,
+                    new Rectangle(padH, row5Top + S(34), row5TextW, S(20)),
+                    palette.SecondaryText,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+                float padYRatio = (selectedPaddingY - MinTitlePadding) / (float)(MaxTitlePadding - MinTitlePadding);
+                DrawCustomSlider(g, paddingYSliderTrackRect, padYRatio, hoveredSlider == ActiveSlider.PaddingY, activeSlider == ActiveSlider.PaddingY);
+
+                var padYValRect = new Rectangle(
+                    paddingYSliderTrackRect.Right + S(6),
+                    row5Top,
+                    ClientSize.Width - padH - (paddingYSliderTrackRect.Right + S(6)),
+                    S(64));
+                TextRenderer.DrawText(
+                    g,
+                    selectedPaddingY + "px",
+                    valueFont,
+                    padYValRect,
                     palette.PrimaryText,
                     TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
                 // =========================================================
-                // 4. 底部操作栏分隔线与背景
+                // 6. 底部操作栏分隔线与背景
                 // =========================================================
-                int footerTop = S(307);
+                int footerTop = S(434);
                 using (var footerBrush = new SolidBrush(palette.ContentBackground))
                 {
                     g.FillRectangle(footerBrush, 0, footerTop, ClientSize.Width, ClientSize.Height - footerTop);
@@ -630,7 +756,7 @@ namespace NoFences
             }
         }
 
-        private void DrawSizeSlider(Graphics g, Rectangle bounds)
+        private void DrawCustomSlider(Graphics g, Rectangle bounds, float ratio, bool isHovered, bool isDragging)
         {
             float scale = GetDpiScale();
             float trackH = Math.Max(4f, 4.5f * scale);
@@ -640,7 +766,6 @@ namespace NoFences
             float trackW = Math.Max(10f, trackRight - trackLeft);
             float cy = bounds.Y + bounds.Height / 2f;
 
-            float ratio = (selectedHeight - MinTitleHeight) / (float)(MaxTitleHeight - MinTitleHeight);
             ratio = Math.Max(0f, Math.Min(1f, ratio));
             float thumbCx = trackLeft + trackW * ratio;
 
@@ -665,13 +790,13 @@ namespace NoFences
             using (var shadowBrush = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
             using (var outerBrush = new SolidBrush(Color.White))
             using (var outerPen = new Pen(palette.ControlBorder, 1f))
-            using (var innerBrush = new SolidBrush(isSliderDragging ? palette.AccentPressedBlue : palette.AccentBlue))
+            using (var innerBrush = new SolidBrush(isDragging ? palette.AccentPressedBlue : palette.AccentBlue))
             {
                 g.FillEllipse(shadowBrush, thumbRect.X, thumbRect.Y + 1f, thumbRect.Width, thumbRect.Height);
                 g.FillEllipse(outerBrush, thumbRect);
                 g.DrawEllipse(outerPen, thumbRect);
 
-                float innerR = thumbR * (isSliderHovered || isSliderDragging ? 0.58f : 0.48f);
+                float innerR = thumbR * (isHovered || isDragging ? 0.58f : 0.48f);
                 g.FillEllipse(innerBrush, thumbCx - innerR, cy - innerR, innerR * 2f, innerR * 2f);
             }
         }
@@ -688,6 +813,7 @@ namespace NoFences
                 {
                     selectedAlignment = chosen;
                     alignmentPopup?.Close();
+                    NotifyPreviewChanged();
                     Invalidate();
                 });
 
@@ -715,9 +841,9 @@ namespace NoFences
         {
             base.OnMouseMove(e);
 
-            if (isSliderDragging)
+            if (activeSlider != ActiveSlider.None)
             {
-                UpdateSliderValueFromMouse(e.X);
+                UpdateActiveSliderFromMouse(e.X);
                 return;
             }
 
@@ -732,16 +858,22 @@ namespace NoFences
             }
 
             bool hitDropdown = alignDropdownRect.Contains(e.Location);
-            bool hitSlider = sliderTrackRect.Contains(e.Location);
+            ActiveSlider hitSlider = ActiveSlider.None;
+            if (sizeSliderTrackRect.Contains(e.Location))
+                hitSlider = ActiveSlider.Size;
+            else if (paddingXSliderTrackRect.Contains(e.Location))
+                hitSlider = ActiveSlider.PaddingX;
+            else if (paddingYSliderTrackRect.Contains(e.Location))
+                hitSlider = ActiveSlider.PaddingY;
 
             if (hitCard != hoveredCardIndex ||
                 hitDropdown != isAlignDropdownHovered ||
-                hitSlider != isSliderHovered)
+                hitSlider != hoveredSlider)
             {
                 hoveredCardIndex = hitCard;
                 isAlignDropdownHovered = hitDropdown;
-                isSliderHovered = hitSlider;
-                Cursor = (hitCard >= 0 || hitDropdown || hitSlider) ? Cursors.Hand : Cursors.Default;
+                hoveredSlider = hitSlider;
+                Cursor = (hitCard >= 0 || hitDropdown || hitSlider != ActiveSlider.None) ? Cursors.Hand : Cursors.Default;
                 Invalidate();
             }
         }
@@ -749,11 +881,11 @@ namespace NoFences
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (!isSliderDragging)
+            if (activeSlider == ActiveSlider.None)
             {
                 hoveredCardIndex = -1;
                 isAlignDropdownHovered = false;
-                isSliderHovered = false;
+                hoveredSlider = ActiveSlider.None;
                 Cursor = Cursors.Default;
                 Invalidate();
             }
@@ -770,6 +902,8 @@ namespace NoFences
                 if (cardHitRects[i].Contains(e.Location))
                 {
                     selectedPosition = GetCardPosition(i);
+                    EnsureAdaptedTitleHeight();
+                    NotifyPreviewChanged();
                     Invalidate();
                     return;
                 }
@@ -781,39 +915,101 @@ namespace NoFences
                 return;
             }
 
-            if (sliderTrackRect.Contains(e.Location))
+            if (sizeSliderTrackRect.Contains(e.Location))
             {
-                isSliderDragging = true;
+                activeSlider = ActiveSlider.Size;
                 Capture = true;
-                UpdateSliderValueFromMouse(e.X);
+                UpdateActiveSliderFromMouse(e.X);
+            }
+            else if (paddingXSliderTrackRect.Contains(e.Location))
+            {
+                activeSlider = ActiveSlider.PaddingX;
+                Capture = true;
+                UpdateActiveSliderFromMouse(e.X);
+            }
+            else if (paddingYSliderTrackRect.Contains(e.Location))
+            {
+                activeSlider = ActiveSlider.PaddingY;
+                Capture = true;
+                UpdateActiveSliderFromMouse(e.X);
             }
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
-            if (isSliderDragging)
+            if (activeSlider != ActiveSlider.None)
             {
-                isSliderDragging = false;
+                activeSlider = ActiveSlider.None;
                 Capture = false;
                 Invalidate();
             }
         }
 
-        private void UpdateSliderValueFromMouse(int mouseX)
+        private void UpdateActiveSliderFromMouse(int mouseX)
+        {
+            switch (activeSlider)
+            {
+                case ActiveSlider.Size:
+                    UpdateSizeSliderFromMouse(mouseX);
+                    break;
+                case ActiveSlider.PaddingX:
+                    UpdatePaddingXSliderFromMouse(mouseX);
+                    break;
+                case ActiveSlider.PaddingY:
+                    UpdatePaddingYSliderFromMouse(mouseX);
+                    break;
+            }
+        }
+
+        private float GetSliderRatio(Rectangle trackRect, int mouseX)
         {
             float scale = GetDpiScale();
             float thumbR = Math.Max(7f, 8f * scale);
-            float trackLeft = sliderTrackRect.X + thumbR;
-            float trackRight = sliderTrackRect.Right - thumbR;
+            float trackLeft = trackRect.X + thumbR;
+            float trackRight = trackRect.Right - thumbR;
             float trackW = Math.Max(1f, trackRight - trackLeft);
 
             float ratio = (mouseX - trackLeft) / trackW;
-            ratio = Math.Max(0f, Math.Min(1f, ratio));
-            int nextValue = ClampHeight((int)Math.Round(MinTitleHeight + ratio * (MaxTitleHeight - MinTitleHeight)));
+            return Math.Max(0f, Math.Min(1f, ratio));
+        }
+
+        private void UpdateSizeSliderFromMouse(int mouseX)
+        {
+            float ratio = GetSliderRatio(sizeSliderTrackRect, mouseX);
+            int rawValue = (int)Math.Round(MinTitleHeight + ratio * (MaxTitleHeight - MinTitleHeight));
+            int minAllowed = CalculateMinTitleHeight(selectedPosition, selectedPaddingX, selectedPaddingY);
+            int nextValue = Math.Max(minAllowed, Math.Min(MaxTitleHeight, rawValue));
             if (nextValue != selectedHeight)
             {
                 selectedHeight = nextValue;
+                NotifyPreviewChanged();
+                Invalidate();
+            }
+        }
+
+        private void UpdatePaddingXSliderFromMouse(int mouseX)
+        {
+            float ratio = GetSliderRatio(paddingXSliderTrackRect, mouseX);
+            int nextValue = ClampPadding((int)Math.Round(MinTitlePadding + ratio * (MaxTitlePadding - MinTitlePadding)));
+            if (nextValue != selectedPaddingX)
+            {
+                selectedPaddingX = nextValue;
+                EnsureAdaptedTitleHeight();
+                NotifyPreviewChanged();
+                Invalidate();
+            }
+        }
+
+        private void UpdatePaddingYSliderFromMouse(int mouseX)
+        {
+            float ratio = GetSliderRatio(paddingYSliderTrackRect, mouseX);
+            int nextValue = ClampPadding((int)Math.Round(MinTitlePadding + ratio * (MaxTitlePadding - MinTitlePadding)));
+            if (nextValue != selectedPaddingY)
+            {
+                selectedPaddingY = nextValue;
+                EnsureAdaptedTitleHeight();
+                NotifyPreviewChanged();
                 Invalidate();
             }
         }
@@ -822,8 +1018,42 @@ namespace NoFences
         {
             selectedPosition = FenceTitlePosition.Top;
             selectedAlignment = FenceTitleTextAlignment.Center;
+            selectedPaddingX = DefaultTitlePaddingX;
+            selectedPaddingY = DefaultTitlePaddingY;
             selectedHeight = DefaultTitleHeight;
+            EnsureAdaptedTitleHeight();
+            NotifyPreviewChanged();
             Invalidate();
+        }
+
+        /// <summary>
+        /// 计算当前位置与内边距配置下所需要的最小自适应标题栏尺寸。
+        /// 横向标题栏（顶/底）：根据文本高度（约 20px）加双倍上下内边距自适应扩展。
+        /// 纵向标题栏（左/右）：根据单字宽度（约 20px）加双倍左右内边距自适应扩展。
+        /// </summary>
+        public static int CalculateMinTitleHeight(FenceTitlePosition position, int padX, int padY)
+        {
+            if (position == FenceTitlePosition.Left || position == FenceTitlePosition.Right)
+            {
+                return Math.Max(MinTitleHeight, 20 + padX * 2);
+            }
+            return Math.Max(MinTitleHeight, 20 + padY * 2);
+        }
+
+        private bool EnsureAdaptedTitleHeight()
+        {
+            int minNeeded = CalculateMinTitleHeight(selectedPosition, selectedPaddingX, selectedPaddingY);
+            if (selectedHeight < minNeeded)
+            {
+                selectedHeight = Math.Min(MaxTitleHeight, minNeeded);
+                return true;
+            }
+            return false;
+        }
+
+        private void NotifyPreviewChanged()
+        {
+            PreviewChanged?.Invoke(selectedPosition, selectedAlignment, selectedHeight, selectedPaddingX, selectedPaddingY);
         }
 
         public static int ClampHeight(int value)
@@ -832,6 +1062,15 @@ namespace NoFences
                 return MinTitleHeight;
             if (value > MaxTitleHeight)
                 return MaxTitleHeight;
+            return value;
+        }
+
+        public static int ClampPadding(int value)
+        {
+            if (value < MinTitlePadding)
+                return MinTitlePadding;
+            if (value > MaxTitlePadding)
+                return MaxTitlePadding;
             return value;
         }
 

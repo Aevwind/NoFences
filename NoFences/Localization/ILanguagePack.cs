@@ -76,6 +76,14 @@ namespace NoFences.Localization
         public const string TitleSettingsAlignRight = "dialog.titleSettings.align.right";
         public const string TitleSettingsSizeTitle = "dialog.titleSettings.size.title";
         public const string TitleSettingsSizeDesc = "dialog.titleSettings.size.desc";
+        public const string TitleSettingsPaddingTitle = "dialog.titleSettings.padding.title";
+        public const string TitleSettingsPaddingDesc = "dialog.titleSettings.padding.desc";
+        public const string TitleSettingsPaddingXTitle = "dialog.titleSettings.paddingX.title";
+        public const string TitleSettingsPaddingXDesc = "dialog.titleSettings.paddingX.desc";
+        public const string TitleSettingsPaddingYTitle = "dialog.titleSettings.paddingY.title";
+        public const string TitleSettingsPaddingYDesc = "dialog.titleSettings.paddingY.desc";
+        public const string TitleSettingsLineHeightTitle = "dialog.titleSettings.lineHeight.title";
+        public const string TitleSettingsLineHeightDesc = "dialog.titleSettings.lineHeight.desc";
 
         // =====================================================================
         // 4. 图标多选管理与消息提示框

@@ -431,7 +431,10 @@ namespace NoFences
             iconFont?.Dispose();
 
             string familyName = ResolveDesktopFontFamily(iconMetrics.lfFont.lfFaceName);
-            float titleSize = Math.Max(8f, (float)Math.Floor(logicalTitleHeight / 2.0));
+            float availableSpace = IsVerticalTitleBar
+                ? Math.Max(12f, logicalTitleHeight - (fenceInfo?.TitlePaddingX ?? 10) * 2)
+                : Math.Max(12f, logicalTitleHeight - (fenceInfo?.TitlePaddingY ?? 6) * 2);
+            float titleSize = Math.Max(8f, Math.Min(32f, (float)Math.Floor(availableSpace * 0.72f)));
             try
             {
                 titleFont = new Font(familyName, titleSize, FontStyle.Regular);
@@ -491,8 +494,12 @@ namespace NoFences
             };
             iconMetricsPollTimer.Start();
 
-            // 标题栏高度：逻辑像素，有效范围 16~100
-            logicalTitleHeight = (fenceInfo.TitleHeight < 16 || fenceInfo.TitleHeight > 100) ? 35 : fenceInfo.TitleHeight;
+            // 标题栏高度：逻辑像素，根据内边距自适应扩展
+            int minNeeded = HeightDialog.CalculateMinTitleHeight(
+                fenceInfo.TitlePosition,
+                fenceInfo.TitlePaddingX,
+                fenceInfo.TitlePaddingY);
+            logicalTitleHeight = Math.Max(minNeeded, (fenceInfo.TitleHeight < 16 || fenceInfo.TitleHeight > 100) ? 35 : fenceInfo.TitleHeight);
             fenceInfo.TitleHeight = logicalTitleHeight;
             titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
             
@@ -954,12 +961,14 @@ namespace NoFences
                 int minHeight;
                 if (IsVerticalTitleBar)
                 {
+                    int padY = LogicalPixelsToDevice(fenceInfo.TitlePaddingY);
                     minWidth = titleHeight + itemWidth + itemPadding * 2;
-                    minHeight = Math.Max(titleTextWidth + itemPadding * 2, itemHeight + itemPadding * 2);
+                    minHeight = Math.Max(titleTextWidth + padY * 2, itemHeight + itemPadding * 2);
                 }
                 else
                 {
-                    int titleMinWidth = titleTextWidth + itemPadding * 2;
+                    int padX = LogicalPixelsToDevice(fenceInfo.TitlePaddingX);
+                    int titleMinWidth = titleTextWidth + padX * 2;
                     int iconMinWidth = itemPadding * 2 + itemWidth;
                     minWidth = Math.Max(titleMinWidth, iconMinWidth);
                     minHeight = titleHeight + itemHeight + itemPadding * 2;
@@ -2084,7 +2093,7 @@ namespace NoFences
             hasHoverUpdated = false;
         }
 
-        /// <summary>按当前栅栏的标题栏位置（顶/底/左/右）与文本对齐方式（靠左/居中/靠右）绘制标题文字。</summary>
+        /// <summary>按当前栅栏的标题栏位置（顶/底/左/右）、文本对齐方式、内边距与行高倍数绘制标题文字。</summary>
         private void DrawTitleBarText(Graphics graphics, ThemeDefinition theme, Rectangle titleBounds)
         {
             if (titleBounds.Width <= 0 || titleBounds.Height <= 0 || string.IsNullOrEmpty(Text))
@@ -2104,43 +2113,133 @@ namespace NoFences
                     break;
             }
 
-            int padding = LogicalPixelsToDevice(10);
+            int padX = LogicalPixelsToDevice(fenceInfo.TitlePaddingX);
+            int padY = LogicalPixelsToDevice(fenceInfo.TitlePaddingY);
+
             using (var titleTextBrush = new SolidBrush(theme.TitleTextColor))
-            using (var titleFormat = new StringFormat
             {
-                Alignment = primaryAlignment,
-                LineAlignment = StringAlignment.Center,
-                Trimming = StringTrimming.EllipsisCharacter,
-                FormatFlags = StringFormatFlags.NoWrap
-            })
-            {
-                RectangleF textRect;
+                var previousOffsetMode = graphics.PixelOffsetMode;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
+
                 if (IsVerticalTitleBar)
                 {
-                    titleFormat.FormatFlags |= StringFormatFlags.DirectionVertical;
-                    textRect = new RectangleF(
-                        titleBounds.X,
-                        titleBounds.Y + padding,
-                        titleBounds.Width,
-                        Math.Max(1, titleBounds.Height - padding * 2));
+                    // 竖排标题栏：padX 为左右内边距，padY 为上下内边距
+                    int effectivePadX = Math.Min(padX, Math.Max(0, (titleBounds.Width - 4) / 2));
+                    int effectivePadY = Math.Min(padY, Math.Max(0, (titleBounds.Height - 4) / 2));
+                    var textRect = new RectangleF(
+                        titleBounds.X + effectivePadX,
+                        titleBounds.Y + effectivePadY,
+                        Math.Max(1, titleBounds.Width - effectivePadX * 2),
+                        Math.Max(1, titleBounds.Height - effectivePadY * 2));
+
+                    var elements = new List<string>();
+                    var enumerator = System.Globalization.StringInfo.GetTextElementEnumerator(Text);
+                    while (enumerator.MoveNext())
+                    {
+                        elements.Add(enumerator.GetTextElement());
+                    }
+
+                    if (elements.Count > 0)
+                    {
+                        float fontHeight = titleFont.GetHeight(graphics);
+                        float stepY = fontHeight * 1.05f;
+                        float totalSpan = (elements.Count - 1) * stepY + fontHeight;
+
+                        float startY;
+                        switch (primaryAlignment)
+                        {
+                            case StringAlignment.Near:
+                                startY = textRect.Y;
+                                break;
+                            case StringAlignment.Far:
+                                startY = textRect.Bottom - totalSpan;
+                                break;
+                            default:
+                                startY = textRect.Y + (textRect.Height - totalSpan) / 2f;
+                                break;
+                        }
+
+                        using (var charFormat = new StringFormat
+                        {
+                            Alignment = StringAlignment.Center,
+                            LineAlignment = StringAlignment.Center,
+                            FormatFlags = StringFormatFlags.NoWrap
+                        })
+                        {
+                            for (int i = 0; i < elements.Count; i++)
+                            {
+                                float charY = startY + i * stepY;
+                                if (charY + fontHeight <= textRect.Y)
+                                    continue;
+                                if (charY >= textRect.Bottom)
+                                    break;
+
+                                // 接近底部且还有后续字符时绘制省略号
+                                if (charY + stepY > textRect.Bottom && i < elements.Count - 1)
+                                {
+                                    var ellipsisRect = new RectangleF(textRect.X, charY, textRect.Width, fontHeight);
+                                    graphics.DrawString("…", titleFont, titleTextBrush, ellipsisRect, charFormat);
+                                    break;
+                                }
+
+                                var charRect = new RectangleF(textRect.X, charY, textRect.Width, fontHeight);
+                                graphics.DrawString(elements[i], titleFont, titleTextBrush, charRect, charFormat);
+                            }
+                        }
+                    }
                 }
                 else
                 {
-                    textRect = new RectangleF(
-                        titleBounds.X + padding,
-                        titleBounds.Y,
-                        Math.Max(1, titleBounds.Width - padding * 2),
-                        titleBounds.Height);
+                    // 横排标题栏：padX 为左右内边距，padY 为上下内边距（自适应扩展标题高度）
+                    int effectivePadX = Math.Min(padX, Math.Max(0, (titleBounds.Width - 4) / 2));
+                    int effectivePadY = Math.Min(padY, Math.Max(0, (titleBounds.Height - 4) / 2));
+                    var textRect = new RectangleF(
+                        titleBounds.X + effectivePadX,
+                        titleBounds.Y + effectivePadY,
+                        Math.Max(1, titleBounds.Width - effectivePadX * 2),
+                        Math.Max(1, titleBounds.Height - effectivePadY * 2));
+
+                    string[] lines = Text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+                    if (lines.Length > 1)
+                    {
+                        float fontHeight = titleFont.GetHeight(graphics);
+                        float stepY = fontHeight * 1.15f;
+                        float totalH = (lines.Length - 1) * stepY + fontHeight;
+                        float startY = textRect.Y + (textRect.Height - totalH) / 2f;
+
+                        using (var lineFormat = new StringFormat
+                        {
+                            Alignment = primaryAlignment,
+                            LineAlignment = StringAlignment.Center,
+                            Trimming = StringTrimming.EllipsisCharacter,
+                            FormatFlags = StringFormatFlags.NoWrap
+                        })
+                        {
+                            for (int i = 0; i < lines.Length; i++)
+                            {
+                                float lineY = startY + i * stepY;
+                                if (lineY + fontHeight > textRect.Bottom)
+                                    break;
+                                var lineRect = new RectangleF(textRect.X, lineY, textRect.Width, fontHeight);
+                                graphics.DrawString(lines[i], titleFont, titleTextBrush, lineRect, lineFormat);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        using (var titleFormat = new StringFormat
+                        {
+                            Alignment = primaryAlignment,
+                            LineAlignment = StringAlignment.Center,
+                            Trimming = StringTrimming.EllipsisCharacter,
+                            FormatFlags = StringFormatFlags.NoWrap
+                        })
+                        {
+                            graphics.DrawString(Text, titleFont, titleTextBrush, textRect, titleFormat);
+                        }
+                    }
                 }
 
-                var previousOffsetMode = graphics.PixelOffsetMode;
-                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Default;
-                graphics.DrawString(
-                    Text,
-                    titleFont,
-                    titleTextBrush,
-                    textRect,
-                    titleFormat);
                 graphics.PixelOffsetMode = previousOffsetMode;
             }
         }
@@ -3044,32 +3143,79 @@ namespace NoFences
 
         }
 
-        /// <summary>打开标题设置对话框，配置标题栏位置、文本对齐方式与标题栏大小。</summary>
+        /// <summary>打开标题设置对话框，支持实时预览；确定则保存修改，取消则恢复修改前的设置。</summary>
         private void titleSizeToolStripMenuItem_Click(object sender, EventArgs e)
         {
+            // 备份修改前的初始状态，供取消时回滚
+            int origHeight = fenceInfo.TitleHeight;
+            FenceTitlePosition origPosition = fenceInfo.TitlePosition;
+            FenceTitleTextAlignment origAlignment = fenceInfo.TitleTextAlignment;
+            int origPaddingX = fenceInfo.TitlePaddingX;
+            int origPaddingY = fenceInfo.TitlePaddingY;
+
+            bool wasMinified = isMinified;
+            if (wasMinified)
+                ExpandFromMinified(animate: false);
+
             using (var dialog = new HeightDialog(
                 fenceInfo.TitleHeight,
                 fenceInfo.TitlePosition,
-                fenceInfo.TitleTextAlignment))
+                fenceInfo.TitleTextAlignment,
+                fenceInfo.TitlePaddingX,
+                fenceInfo.TitlePaddingY))
             {
+                dialog.StartPosition = FormStartPosition.CenterScreen;
+
+                // 交互时实时预览变更
+                dialog.PreviewChanged += (pos, align, h, padX, padY) =>
+                {
+                    ApplyTitleSettings(pos, align, h, padX, padY);
+                };
+
                 if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
-                    bool wasMinified = isMinified;
-                    if (wasMinified)
-                        ExpandFromMinified(animate: false);
-
-                    fenceInfo.TitleHeight = dialog.TitleHeight;
-                    fenceInfo.TitlePosition = dialog.TitlePosition;
-                    fenceInfo.TitleTextAlignment = dialog.TitleTextAlignment;
-                    logicalTitleHeight = dialog.TitleHeight;
-                    titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
-                    ReloadFonts();
+                    // 确认保存修改
+                    ApplyTitleSettings(
+                        dialog.TitlePosition,
+                        dialog.TitleTextAlignment,
+                        dialog.TitleHeight,
+                        dialog.TitlePaddingX,
+                        dialog.TitlePaddingY);
+                    if (wasMinified || (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition)))
+                        Minify(animate: false);
+                    Save();
+                }
+                else
+                {
+                    // 取消或直接关闭：完全恢复修改前的初始配置
+                    ApplyTitleSettings(origPosition, origAlignment, origHeight, origPaddingX, origPaddingY);
                     if (wasMinified || (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition)))
                         Minify(animate: false);
                     Refresh();
-                    Save();
                 }
             }
+        }
+
+        /// <summary>应用标题栏配置并使标题栏尺寸自适应内边距，刷新界面渲染。</summary>
+        private void ApplyTitleSettings(
+            FenceTitlePosition position,
+            FenceTitleTextAlignment alignment,
+            int height,
+            int padX,
+            int padY)
+        {
+            fenceInfo.TitlePosition = position;
+            fenceInfo.TitleTextAlignment = alignment;
+            fenceInfo.TitlePaddingX = padX;
+            fenceInfo.TitlePaddingY = padY;
+
+            int minNeeded = HeightDialog.CalculateMinTitleHeight(position, padX, padY);
+            logicalTitleHeight = Math.Max(height, minNeeded);
+            fenceInfo.TitleHeight = logicalTitleHeight;
+            titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
+
+            ReloadFonts();
+            Refresh();
         }
 
         /// <summary>

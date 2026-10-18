@@ -74,6 +74,38 @@ namespace NoFences.Model
         /// <summary>标题文本对齐方式（默认居中 Center）</summary>
         public FenceTitleTextAlignment TitleTextAlignment { get; set; } = FenceTitleTextAlignment.Center;
 
+        private int titlePaddingX = 10;
+        private int titlePaddingY = 6;
+        private float titleLineHeight = 1.5f;
+
+        /// <summary>向后兼容保留的内边距属性（等同于水平内边距 TitlePaddingX）</summary>
+        public int TitlePadding
+        {
+            get => TitlePaddingX;
+            set => TitlePaddingX = value;
+        }
+
+        /// <summary>标题栏水平内边距（左右内边距，逻辑像素，默认 10）</summary>
+        public int TitlePaddingX
+        {
+            get => titlePaddingX < 0 ? 10 : titlePaddingX;
+            set => titlePaddingX = Math.Max(0, Math.Min(50, value));
+        }
+
+        /// <summary>标题栏垂直内边距（上下内边距，逻辑像素，默认 6）</summary>
+        public int TitlePaddingY
+        {
+            get => titlePaddingY < 0 ? 6 : titlePaddingY;
+            set => titlePaddingY = Math.Max(0, Math.Min(50, value));
+        }
+
+        /// <summary>标题栏文字行高倍数（向后兼容保留，默认 1.5）</summary>
+        public float TitleLineHeight
+        {
+            get => titleLineHeight <= 0.1f ? 1.5f : titleLineHeight;
+            set => titleLineHeight = Math.Max(0.5f, Math.Min(3.0f, value <= 0.1f ? 1.5f : value));
+        }
+
         /// <summary>栅栏内图标与文本的缩放比例百分比（10~200，默认 100）</summary>
         public int ScalePercent { get; set; } = 100;
 
