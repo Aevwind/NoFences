@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Windows.Forms;
+using NoFences.Win32;
 
 namespace NoFences.Theming
 {
@@ -17,17 +18,21 @@ namespace NoFences.Theming
     {
         private readonly ThemeDefinition theme;
         private readonly MenuThemeProfile profile;
+        private readonly int targetDpi;
 
-        public ThemedToolStripRenderer(ThemeDefinition theme)
+        public ThemedToolStripRenderer(ThemeDefinition theme, int targetDpi = 96)
             : base(new ThemeColorTable(theme))
         {
             this.theme = theme.Clone();
+            this.targetDpi = targetDpi > 0 ? targetDpi : 96;
             profile = MenuThemeProfile.Create(this.theme);
 
             // ProfessionalRenderer 自带的 RoundedEdges 只提供旧式小圆角，
             // 无法表达 Win11 的 8px 容器圆角，因此由本类统一设置 Region。
             RoundedEdges = false;
         }
+
+        public int TargetDpi => targetDpi;
 
         /// <summary>
         /// Profile 供 ThemeUi 配置菜单尺寸使用。仅暴露只读对象，避免布局层
@@ -46,6 +51,10 @@ namespace NoFences.Theming
                 e.ToolStrip,
                 profile.ContainerCornerRadius);
 
+            bool usesNativeCorners = DropShadow.SupportsNativeCorners() &&
+                containerRadius > 0 &&
+                e.ToolStrip is ToolStripDropDown;
+
             GraphicsState state = e.Graphics.Save();
             try
             {
@@ -54,7 +63,9 @@ namespace NoFences.Theming
                     : SmoothingMode.None;
                 using (var brush = new SolidBrush(theme.MenuBackgroundColor))
                 {
-                    if (containerRadius <= 0)
+                    // 原生 DWM 圆角下填充整个客户区矩形，由 DWM 完成硬件抗锯齿圆角裁剪与阴影；
+                    // 避免 GDI+ FillPath 边缘与 DWM 裁剪线存在亚像素微差造成角部露底或白边。
+                    if (containerRadius <= 0 || usesNativeCorners)
                     {
                         e.Graphics.FillRectangle(brush, bounds);
                     }
@@ -491,7 +502,15 @@ namespace NoFences.Theming
             int containerRadius = ScaleLogical(
                 toolStrip,
                 profile.ContainerCornerRadius);
+
+            // 当系统支持且已启用 DWM 原生顶层窗口圆角时，由 DWM 统一负责四角裁剪与
+            // 阴影投射；若此时设置 GDI Region，DWM 会停用原生圆角并导致四角出现底色方块。
+            bool usesNativeCorners = DropShadow.SupportsNativeCorners() &&
+                containerRadius > 0 &&
+                toolStrip is ToolStripDropDown;
+
             if (containerRadius <= 0 ||
+                usesNativeCorners ||
                 toolStrip.Width <= 0 ||
                 toolStrip.Height <= 0)
             {
@@ -639,13 +658,32 @@ namespace NoFences.Theming
                 bounds.Height);
         }
 
-        private static float GetDpiScale(ToolStrip toolStrip)
+        private float GetDpiScale(ToolStrip toolStrip)
         {
-            int dpi = toolStrip.DeviceDpi > 0 ? toolStrip.DeviceDpi : 96;
-            return dpi / 96f;
+            if (targetDpi > 0 && targetDpi != 96)
+                return targetDpi / 96f;
+
+            if (toolStrip != null)
+            {
+                var menu = toolStrip as ContextMenuStrip;
+                if (menu != null && menu.SourceControl != null && menu.SourceControl.IsHandleCreated)
+                {
+                    uint d = WindowUtil.GetDpiForWindow(menu.SourceControl.Handle);
+                    if (d > 0) return d / 96f;
+                }
+                if (toolStrip.IsHandleCreated)
+                {
+                    uint d = WindowUtil.GetDpiForWindow(toolStrip.Handle);
+                    if (d > 0) return d / 96f;
+                }
+                if (toolStrip.DeviceDpi > 0)
+                    return toolStrip.DeviceDpi / 96f;
+            }
+
+            return targetDpi > 0 ? targetDpi / 96f : 1f;
         }
 
-        private static int ScaleLogical(ToolStrip toolStrip, int logicalPixels)
+        private int ScaleLogical(ToolStrip toolStrip, int logicalPixels)
         {
             if (logicalPixels <= 0)
                 return 0;

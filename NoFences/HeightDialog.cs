@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using NoFences.Localization;
 using NoFences.Model;
@@ -15,11 +16,17 @@ namespace NoFences
     /// 支持配置：
     /// 1. 标题栏位置（底部、顶部、左、右侧）—— 采用可视化缩略卡片选择；
     /// 2. 标题文本对齐方式（靠左、居中、靠右）—— 采用现代圆角下拉弹出菜单选择；
-    /// 3. 标题栏大小（20~100px）—— 采用平滑滑块实时调节。
+    /// 3. 标题文本大小（10~40px，行高固定为 1）—— 采用平滑滑块实时调节，标题栏高度跟随文本大小与上下内边距自动撑开；
+    /// 4. 标题栏左右内边距（0~50px）；
+    /// 5. 标题栏上下内边距（0~50px）。
     /// </summary>
     public partial class HeightDialog : Form
     {
-        public const int DefaultTitleHeight = 35;
+        public const int DefaultTitleFontSize = 14;
+        public const int MinTitleFontSize = 10;
+        public const int MaxTitleFontSize = 40;
+
+        public const int DefaultTitleHeight = 26;
         public const int MinTitleHeight = 20;
         public const int MaxTitleHeight = 100;
 
@@ -31,6 +38,7 @@ namespace NoFences
         private SettingsPalette palette;
         private FenceTitlePosition selectedPosition;
         private FenceTitleTextAlignment selectedAlignment;
+        private int selectedFontSize;
         private int selectedHeight;
         private int selectedPaddingX;
         private int selectedPaddingY;
@@ -53,10 +61,13 @@ namespace NoFences
         private readonly SettingsActionButton btnCancel;
         private ToolStripDropDown alignmentPopup;
 
-        /// <summary>当标题设置发生任意变更时触发实时预览事件（位置、对齐方式、标题栏大小、左右内边距、上下内边距）。</summary>
-        public event Action<FenceTitlePosition, FenceTitleTextAlignment, int, int, int> PreviewChanged;
+        /// <summary>当标题设置发生任意变更时触发实时预览事件（位置、对齐方式、标题文本大小、自适应撑开的标题栏高度、左右内边距、上下内边距）。</summary>
+        public event Action<FenceTitlePosition, FenceTitleTextAlignment, int, int, int, int> PreviewChanged;
 
-        /// <summary>用户选择的标题栏大小（逻辑像素，20~100）。</summary>
+        /// <summary>用户选择的标题文本大小（逻辑像素，10~40，最低 10px）。</summary>
+        public int TitleFontSize => selectedFontSize;
+
+        /// <summary>根据标题文本大小与内边距自动撑开的标题栏大小（逻辑像素）。</summary>
         public int TitleHeight => selectedHeight;
 
         /// <summary>用户选择的标题栏位置（顶部/底部/左/右侧）。</summary>
@@ -75,7 +86,7 @@ namespace NoFences
         public int TitlePadding => selectedPaddingX;
 
         public HeightDialog(
-            int initialHeight,
+            int initialFontSize,
             FenceTitlePosition initialPosition = FenceTitlePosition.Top,
             FenceTitleTextAlignment initialAlignment = FenceTitleTextAlignment.Center,
             int initialPaddingX = DefaultTitlePaddingX,
@@ -93,8 +104,8 @@ namespace NoFences
             selectedAlignment = initialAlignment;
             selectedPaddingX = ClampPadding(initialPaddingX);
             selectedPaddingY = ClampPadding(initialPaddingY);
-            selectedHeight = ClampHeight(initialHeight);
-            EnsureAdaptedTitleHeight();
+            selectedFontSize = ClampFontSize(initialFontSize);
+            UpdateAdaptedTitleHeight();
 
             btnRestore = new SettingsActionButton { IsPrimary = false };
             btnOk = new SettingsActionButton { IsPrimary = true };
@@ -188,7 +199,34 @@ namespace NoFences
 
         private float GetDpiScale()
         {
+            if (IsHandleCreated)
+            {
+                uint dpi = WindowUtil.GetDpiForWindow(Handle);
+                if (dpi > 0)
+                    return dpi / 96f;
+            }
             return DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WindowUtil.WM_DPICHANGED)
+            {
+                WindowUtil.RECT r = (WindowUtil.RECT)Marshal.PtrToStructure(m.LParam, typeof(WindowUtil.RECT));
+                WindowUtil.SetWindowPos(
+                    Handle,
+                    IntPtr.Zero,
+                    r.Left,
+                    r.Top,
+                    r.Right - r.Left,
+                    r.Bottom - r.Top,
+                    WindowUtil.SWP_NOZORDER | WindowUtil.SWP_NOACTIVATE);
+                UpdateDialogLayout();
+                Invalidate(true);
+                m.Result = IntPtr.Zero;
+                return;
+            }
+            base.WndProc(ref m);
         }
 
         private int S(int logicalPixels)
@@ -424,7 +462,7 @@ namespace NoFences
                     palette.SecondaryText,
                     TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
-                float sizeRatio = (selectedHeight - MinTitleHeight) / (float)(MaxTitleHeight - MinTitleHeight);
+                float sizeRatio = (selectedFontSize - MinTitleFontSize) / (float)(MaxTitleFontSize - MinTitleFontSize);
                 DrawCustomSlider(g, sizeSliderTrackRect, sizeRatio, hoveredSlider == ActiveSlider.Size, activeSlider == ActiveSlider.Size);
 
                 var sizeValRect = new Rectangle(
@@ -434,7 +472,7 @@ namespace NoFences
                     S(64));
                 TextRenderer.DrawText(
                     g,
-                    selectedHeight + "px",
+                    selectedFontSize + "px",
                     valueFont,
                     sizeValRect,
                     palette.PrimaryText,
@@ -902,7 +940,7 @@ namespace NoFences
                 if (cardHitRects[i].Contains(e.Location))
                 {
                     selectedPosition = GetCardPosition(i);
-                    EnsureAdaptedTitleHeight();
+                    UpdateAdaptedTitleHeight();
                     NotifyPreviewChanged();
                     Invalidate();
                     return;
@@ -977,12 +1015,12 @@ namespace NoFences
         private void UpdateSizeSliderFromMouse(int mouseX)
         {
             float ratio = GetSliderRatio(sizeSliderTrackRect, mouseX);
-            int rawValue = (int)Math.Round(MinTitleHeight + ratio * (MaxTitleHeight - MinTitleHeight));
-            int minAllowed = CalculateMinTitleHeight(selectedPosition, selectedPaddingX, selectedPaddingY);
-            int nextValue = Math.Max(minAllowed, Math.Min(MaxTitleHeight, rawValue));
-            if (nextValue != selectedHeight)
+            int rawValue = (int)Math.Round(MinTitleFontSize + ratio * (MaxTitleFontSize - MinTitleFontSize));
+            int nextValue = ClampFontSize(rawValue);
+            if (nextValue != selectedFontSize)
             {
-                selectedHeight = nextValue;
+                selectedFontSize = nextValue;
+                UpdateAdaptedTitleHeight();
                 NotifyPreviewChanged();
                 Invalidate();
             }
@@ -995,7 +1033,7 @@ namespace NoFences
             if (nextValue != selectedPaddingX)
             {
                 selectedPaddingX = nextValue;
-                EnsureAdaptedTitleHeight();
+                UpdateAdaptedTitleHeight();
                 NotifyPreviewChanged();
                 Invalidate();
             }
@@ -1008,7 +1046,7 @@ namespace NoFences
             if (nextValue != selectedPaddingY)
             {
                 selectedPaddingY = nextValue;
-                EnsureAdaptedTitleHeight();
+                UpdateAdaptedTitleHeight();
                 NotifyPreviewChanged();
                 Invalidate();
             }
@@ -1020,40 +1058,52 @@ namespace NoFences
             selectedAlignment = FenceTitleTextAlignment.Center;
             selectedPaddingX = DefaultTitlePaddingX;
             selectedPaddingY = DefaultTitlePaddingY;
-            selectedHeight = DefaultTitleHeight;
-            EnsureAdaptedTitleHeight();
+            selectedFontSize = DefaultTitleFontSize;
+            UpdateAdaptedTitleHeight();
             NotifyPreviewChanged();
             Invalidate();
         }
 
         /// <summary>
-        /// 计算当前位置与内边距配置下所需要的最小自适应标题栏尺寸。
-        /// 横向标题栏（顶/底）：根据文本高度（约 20px）加双倍上下内边距自适应扩展。
-        /// 纵向标题栏（左/右）：根据单字宽度（约 20px）加双倍左右内边距自适应扩展。
+        /// 根据标题栏位置、标题文本大小与内边距自动计算撑开的标题栏尺寸（逻辑像素）。
+        /// 行高固定为 1：
+        /// - 横向标题栏（顶/底）：标题栏高度跟随标题文本大小和上下内边距自动撑开（TitleHeight = fontSize + padY * 2）；
+        /// - 纵向标题栏（左/右）：标题栏厚度跟随单字宽度和左右内边距自动撑开（TitleHeight = fontSize + padX * 2）。
         /// </summary>
-        public static int CalculateMinTitleHeight(FenceTitlePosition position, int padX, int padY)
+        public static int CalculateAdaptedTitleHeight(FenceTitlePosition position, int fontSize, int padX, int padY)
         {
+            int safeFontSize = Math.Max(MinTitleFontSize, fontSize);
             if (position == FenceTitlePosition.Left || position == FenceTitlePosition.Right)
             {
-                return Math.Max(MinTitleHeight, 20 + padX * 2);
+                return safeFontSize + padX * 2;
             }
-            return Math.Max(MinTitleHeight, 20 + padY * 2);
+            return safeFontSize + padY * 2;
         }
 
-        private bool EnsureAdaptedTitleHeight()
+        /// <summary>向后兼容保留的最小标题栏高度计算方法。</summary>
+        public static int CalculateMinTitleHeight(FenceTitlePosition position, int padX, int padY)
         {
-            int minNeeded = CalculateMinTitleHeight(selectedPosition, selectedPaddingX, selectedPaddingY);
-            if (selectedHeight < minNeeded)
-            {
-                selectedHeight = Math.Min(MaxTitleHeight, minNeeded);
-                return true;
-            }
-            return false;
+            return CalculateAdaptedTitleHeight(position, DefaultTitleFontSize, padX, padY);
+        }
+
+        private void UpdateAdaptedTitleHeight()
+        {
+            selectedHeight = CalculateAdaptedTitleHeight(selectedPosition, selectedFontSize, selectedPaddingX, selectedPaddingY);
         }
 
         private void NotifyPreviewChanged()
         {
-            PreviewChanged?.Invoke(selectedPosition, selectedAlignment, selectedHeight, selectedPaddingX, selectedPaddingY);
+            UpdateAdaptedTitleHeight();
+            PreviewChanged?.Invoke(selectedPosition, selectedAlignment, selectedFontSize, selectedHeight, selectedPaddingX, selectedPaddingY);
+        }
+
+        public static int ClampFontSize(int value)
+        {
+            if (value < MinTitleFontSize)
+                return MinTitleFontSize;
+            if (value > MaxTitleFontSize)
+                return MaxTitleFontSize;
+            return value;
         }
 
         public static int ClampHeight(int value)

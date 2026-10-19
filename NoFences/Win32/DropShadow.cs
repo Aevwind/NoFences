@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -127,7 +127,18 @@ namespace NoFences.Win32
         /// </summary>
         public static void SetShadow(Form form, bool enabled)
         {
-            if (form == null || !form.IsHandleCreated || !IsCompositionEnabled())
+            if (form == null || !form.IsHandleCreated)
+                return;
+
+            SetShadow(form.Handle, enabled);
+        }
+
+        /// <summary>
+        /// 为指定窗口句柄启用或关闭 DWM 原生投影。
+        /// </summary>
+        public static void SetShadow(IntPtr hwnd, bool enabled)
+        {
+            if (hwnd == IntPtr.Zero || !IsCompositionEnabled())
                 return;
 
             var margins = new MARGINS
@@ -137,11 +148,11 @@ namespace NoFences.Win32
                 rightWidth = 0,
                 topHeight = enabled ? 1 : 0
             };
-            DwmExtendFrameIntoClientArea(form.Handle, ref margins);
+            DwmExtendFrameIntoClientArea(hwnd, ref margins);
 
             // 2 = DWMNCRP_ENABLED，1 = DWMNCRP_DISABLED。
             int renderingPolicy = enabled ? 2 : 1;
-            DwmSetWindowAttribute(form.Handle, 2, ref renderingPolicy, 4);
+            DwmSetWindowAttribute(hwnd, 2, ref renderingPolicy, 4);
         }
 
         /// <summary>
@@ -150,15 +161,25 @@ namespace NoFences.Win32
         /// </summary>
         public static bool TrySetNativeCorners(Form form, bool rounded)
         {
-            if (form == null || !form.IsHandleCreated ||
-                !IsCompositionEnabled() || !SupportsNativeCorners())
+            if (form == null || !form.IsHandleCreated)
+                return false;
+
+            return TrySetNativeCorners(form.Handle, rounded);
+        }
+
+        /// <summary>
+        /// 为指定窗口句柄在 Windows 11 22000+ 请求 DWM 原生顶层窗口圆角。
+        /// </summary>
+        public static bool TrySetNativeCorners(IntPtr hwnd, bool rounded)
+        {
+            if (hwnd == IntPtr.Zero || !IsCompositionEnabled() || !SupportsNativeCorners())
             {
                 return false;
             }
 
             int preference = rounded ? DWMWCP_ROUND : DWMWCP_DONOTROUND;
             if (DwmSetWindowAttribute(
-                form.Handle,
+                hwnd,
                 DWMWA_WINDOW_CORNER_PREFERENCE,
                 ref preference,
                 4) != 0)
@@ -170,7 +191,7 @@ namespace NoFences.Win32
             // 主题时同时恢复系统默认值。
             int borderColor = rounded ? DWM_COLOR_NONE : DWM_COLOR_DEFAULT;
             DwmSetWindowAttribute(
-                form.Handle,
+                hwnd,
                 DWMWA_BORDER_COLOR,
                 ref borderColor,
                 4);
@@ -178,7 +199,7 @@ namespace NoFences.Win32
         }
 
         /// <summary>判断当前系统是否提供 Windows 11 原生窗口圆角属性。</summary>
-        private static bool SupportsNativeCorners()
+        public static bool SupportsNativeCorners()
         {
             Version version = Environment.OSVersion.Version;
             return version.Major >= 10 && version.Build >= 22000;

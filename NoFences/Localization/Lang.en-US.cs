@@ -67,8 +67,8 @@ namespace NoFences.Localization
             d[LKeys.TitleSettingsAlignLeft] = "Left";
             d[LKeys.TitleSettingsAlignCenter] = "Center";
             d[LKeys.TitleSettingsAlignRight] = "Right";
-            d[LKeys.TitleSettingsSizeTitle] = "Title bar size";
-            d[LKeys.TitleSettingsSizeDesc] = "Adjust the size of the title bar (20px - 100px)";
+            d[LKeys.TitleSettingsSizeTitle] = "Title text size";
+            d[LKeys.TitleSettingsSizeDesc] = "Adjust the font size of the title text (10px - 40px)";
             d[LKeys.TitleSettingsPaddingTitle] = "Padding";
             d[LKeys.TitleSettingsPaddingDesc] = "Adjust title text inner padding from edges (0px - 50px)";
             d[LKeys.TitleSettingsPaddingXTitle] = "Horizontal padding";

@@ -67,8 +67,8 @@ namespace NoFences.Localization
             d[LKeys.TitleSettingsAlignLeft] = "靠左";
             d[LKeys.TitleSettingsAlignCenter] = "居中";
             d[LKeys.TitleSettingsAlignRight] = "靠右";
-            d[LKeys.TitleSettingsSizeTitle] = "标题栏大小";
-            d[LKeys.TitleSettingsSizeDesc] = "调整标题栏的尺寸（20px - 100px）";
+            d[LKeys.TitleSettingsSizeTitle] = "标题文本大小";
+            d[LKeys.TitleSettingsSizeDesc] = "调整标题文本的字体大小（10px - 40px）";
             d[LKeys.TitleSettingsPaddingTitle] = "内边距";
             d[LKeys.TitleSettingsPaddingDesc] = "调整标题文本与边缘的内边距距离（0px - 50px）";
             d[LKeys.TitleSettingsPaddingXTitle] = "左右内边距";

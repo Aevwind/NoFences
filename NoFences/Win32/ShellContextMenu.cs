@@ -34,6 +34,9 @@ namespace Peter
     /// </example>
     public class ShellContextMenu : NativeWindow, IDisposable
     {
+        /// <summary>原生菜单结束跟踪时触发，早于所选 Shell 命令的执行。</summary>
+        public event EventHandler MenuClosed;
+
         private bool disposed;
         #region Constructor
         /// <summary>Default constructor</summary>
@@ -122,6 +125,9 @@ namespace Peter
         /// <returns>true if the message has been handled, false otherwise</returns>
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == (int)WM.EXITMENULOOP)
+                MenuClosed?.Invoke(this, EventArgs.Empty);
+
             #region IContextMenu
 
             if (_oContextMenu != null &&

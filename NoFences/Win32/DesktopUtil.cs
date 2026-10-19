@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Drawing;
@@ -619,9 +619,27 @@ namespace NoFences.Win32
         {
             IntPtr nWinHandle = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Progman", null);
             if (nWinHandle == IntPtr.Zero)
-                throw new InvalidOperationException("找不到桌面 Progman 窗口。");
-            WindowUtil.SetWindowLong(handle, GWL_HWNDPARENT, nWinHandle);
-           
+            {
+                IntPtr hwndWorkerW = IntPtr.Zero;
+                do
+                {
+                    hwndWorkerW = FindWindowEx(IntPtr.Zero, hwndWorkerW, "WorkerW", null);
+                    if (hwndWorkerW != IntPtr.Zero)
+                    {
+                        IntPtr hwndDefView = FindWindowEx(hwndWorkerW, IntPtr.Zero, "SHELLDLL_DefView", null);
+                        if (hwndDefView != IntPtr.Zero)
+                        {
+                            nWinHandle = hwndWorkerW;
+                            break;
+                        }
+                    }
+                } while (hwndWorkerW != IntPtr.Zero);
+            }
+
+            if (nWinHandle != IntPtr.Zero)
+            {
+                WindowUtil.SetWindowLong(handle, GWL_HWNDPARENT, nWinHandle);
+            }
         }
     }
 }

@@ -45,15 +45,39 @@ namespace NoFences.Theming
             form.Invalidate(true);
         }
 
-        public static void ApplyToContextMenu(ContextMenuStrip menu, ThemeDefinition theme)
+        public static void ApplyToContextMenu(ContextMenuStrip menu, ThemeDefinition theme, int targetDpi = 0)
         {
             if (menu == null || theme == null)
                 return;
 
-            // Renderer 属性会把 RenderMode 切换为 Custom。不能在这里使用
-            // ManagerRenderMode，否则菜单可能重新落回全局 ProfessionalRenderer，
-            // 从而在主题切换后仍显示 Windows/设计器的默认颜色。
-            ApplyToToolStrip(menu, theme, new ThemedToolStripRenderer(theme));
+            int effectiveDpi = targetDpi > 0
+                ? targetDpi
+                : ResolveToolStripDpi(menu);
+
+            ApplyToToolStrip(menu, theme, new ThemedToolStripRenderer(theme, effectiveDpi), effectiveDpi);
+        }
+
+        internal static int ResolveToolStripDpi(ToolStrip strip)
+        {
+            if (strip == null)
+                return 96;
+
+            var menu = strip as ContextMenuStrip;
+            if (menu != null && menu.SourceControl != null && menu.SourceControl.IsHandleCreated)
+            {
+                uint dpi = WindowUtil.GetDpiForWindow(menu.SourceControl.Handle);
+                if (dpi > 0)
+                    return (int)dpi;
+            }
+
+            if (strip.IsHandleCreated)
+            {
+                uint dpi = WindowUtil.GetDpiForWindow(strip.Handle);
+                if (dpi > 0)
+                    return (int)dpi;
+            }
+
+            return strip.DeviceDpi > 0 ? strip.DeviceDpi : 96;
         }
 
         private static void ApplyToChildren(Control.ControlCollection controls, ThemeDefinition theme)
@@ -146,18 +170,23 @@ namespace NoFences.Theming
         private static void ApplyToToolStrip(
             ToolStrip strip,
             ThemeDefinition theme,
-            ThemedToolStripRenderer renderer)
+            ThemedToolStripRenderer renderer,
+            int targetDpi = 0)
         {
             MenuThemeProfile profile = renderer.Profile;
+            int effectiveDpi = targetDpi > 0
+                ? targetDpi
+                : (renderer.TargetDpi > 0 ? renderer.TargetDpi : ResolveToolStripDpi(strip));
+
             bool isDropDown = strip is ToolStripDropDown;
             bool isHostedCardDropDown = isDropDown &&
                 strip.Items.Count == 1 &&
                 strip.Items[0] is ToolStripControlHost;
-            Padding menuPadding = ScalePadding(strip, profile.MenuPadding);
-            Padding itemPadding = ScalePadding(strip, profile.ItemPadding);
-            int minimumWidth = ScaleLogical(strip, profile.MinimumWidth);
-            int itemHeight = ScaleLogical(strip, profile.ItemHeight);
-            int separatorHeight = ScaleLogical(strip, profile.SeparatorHeight);
+            Padding menuPadding = ScalePadding(strip, profile.MenuPadding, effectiveDpi);
+            Padding itemPadding = ScalePadding(strip, profile.ItemPadding, effectiveDpi);
+            int minimumWidth = ScaleLogical(strip, profile.MinimumWidth, effectiveDpi);
+            int itemHeight = ScaleLogical(strip, profile.ItemHeight, effectiveDpi);
+            int separatorHeight = ScaleLogical(strip, profile.SeparatorHeight, effectiveDpi);
 
             strip.SuspendLayout();
             try
@@ -171,8 +200,8 @@ namespace NoFences.Theming
                     profile.FontStyle,
                     theme.FontFamilyName);
                 strip.ImageScalingSize = new Size(
-                    ScaleLogical(strip, profile.ImageScalingSize.Width),
-                    ScaleLogical(strip, profile.ImageScalingSize.Height));
+                    ScaleLogical(strip, profile.ImageScalingSize.Width, effectiveDpi),
+                    ScaleLogical(strip, profile.ImageScalingSize.Height, effectiveDpi));
                 strip.GripStyle = ToolStripGripStyle.Hidden;
 
                 if (isDropDown)
@@ -188,11 +217,13 @@ namespace NoFences.Theming
                     var dropDown = (ToolStripDropDown)strip;
                     dropDown.DropShadowEnabled = profile.DropShadowEnabled;
                     dropDown.Opacity = profile.Opacity;
-                    BlurUtil.SetBlur(
-                        dropDown.Handle,
-                        profile.Style == ThemeMenuStyle.Standard &&
-                        theme.EnableBlur &&
-                        profile.Opacity < 1d);
+                    dropDown.Tag = new DropDownThemeState { Profile = profile, Theme = theme };
+                    dropDown.HandleCreated -= DropDownHandleCreatedHandler;
+                    dropDown.HandleCreated += DropDownHandleCreatedHandler;
+                    if (dropDown.IsHandleCreated)
+                    {
+                        ConfigureDropDownHandle(dropDown.Handle, profile, theme);
+                    }
 
                     var dropDownMenu = strip as ToolStripDropDownMenu;
                     if (dropDownMenu != null)
@@ -211,7 +242,8 @@ namespace NoFences.Theming
                     itemPadding,
                     minimumWidth,
                     itemHeight,
-                    separatorHeight);
+                    separatorHeight,
+                    effectiveDpi);
             }
             finally
             {
@@ -256,9 +288,13 @@ namespace NoFences.Theming
             Padding itemPadding,
             int minimumWidth,
             int itemHeight,
-            int separatorHeight)
+            int separatorHeight,
+            int targetDpi = 0)
         {
             MenuThemeProfile profile = renderer.Profile;
+            int effectiveDpi = targetDpi > 0
+                ? targetDpi
+                : (renderer.TargetDpi > 0 ? renderer.TargetDpi : ResolveToolStripDpi(owner));
             foreach (ToolStripItem item in items)
             {
                 item.BackColor = theme.MenuBackgroundColor;
@@ -280,8 +316,7 @@ namespace NoFences.Theming
                         var scaleControl = controlHost.Control as ScaleMenuControl;
                         if (scaleControl != null)
                         {
-                            int targetDpi = owner.DeviceDpi > 0 ? owner.DeviceDpi : 96;
-                            scaleControl.ApplyTheme(theme, profile, targetDpi);
+                            scaleControl.ApplyTheme(theme, profile, effectiveDpi);
                             controlHost.AutoSize = false;
                             controlHost.Size = scaleControl.Size;
                         }
@@ -318,7 +353,7 @@ namespace NoFences.Theming
 
                 var menuItem = item as ToolStripMenuItem;
                 if (menuItem != null && menuItem.HasDropDownItems)
-                    ApplyToToolStrip(menuItem.DropDown, theme, renderer);
+                    ApplyToToolStrip(menuItem.DropDown, theme, renderer, effectiveDpi);
             }
         }
 
@@ -327,28 +362,28 @@ namespace NoFences.Theming
         /// 在 Opening 阶段再次应用主题时，ContextMenuStrip 已取得所属显示器 DPI，
         /// 因而拖到不同缩放比例的显示器后仍可保持 22px/34px 的逻辑行高。
         /// </summary>
-        private static int ScaleLogical(ToolStrip strip, int logicalPixels)
+        private static int ScaleLogical(ToolStrip strip, int logicalPixels, int targetDpi = 0)
         {
-            int dpi = strip.DeviceDpi > 0 ? strip.DeviceDpi : 96;
+            int dpi = targetDpi > 0 ? targetDpi : (strip?.DeviceDpi > 0 ? strip.DeviceDpi : 96);
             return Math.Max(1, (int)Math.Round(
                 logicalPixels * dpi / 96d,
                 MidpointRounding.AwayFromZero));
         }
 
-        private static Padding ScalePadding(ToolStrip strip, Padding logicalPadding)
+        private static Padding ScalePadding(ToolStrip strip, Padding logicalPadding, int targetDpi = 0)
         {
             return new Padding(
-                ScaleLogicalAllowZero(strip, logicalPadding.Left),
-                ScaleLogicalAllowZero(strip, logicalPadding.Top),
-                ScaleLogicalAllowZero(strip, logicalPadding.Right),
-                ScaleLogicalAllowZero(strip, logicalPadding.Bottom));
+                ScaleLogicalAllowZero(strip, logicalPadding.Left, targetDpi),
+                ScaleLogicalAllowZero(strip, logicalPadding.Top, targetDpi),
+                ScaleLogicalAllowZero(strip, logicalPadding.Right, targetDpi),
+                ScaleLogicalAllowZero(strip, logicalPadding.Bottom, targetDpi));
         }
 
-        private static int ScaleLogicalAllowZero(ToolStrip strip, int logicalPixels)
+        private static int ScaleLogicalAllowZero(ToolStrip strip, int logicalPixels, int targetDpi = 0)
         {
             if (logicalPixels == 0)
                 return 0;
-            int dpi = strip.DeviceDpi > 0 ? strip.DeviceDpi : 96;
+            int dpi = targetDpi > 0 ? targetDpi : (strip?.DeviceDpi > 0 ? strip.DeviceDpi : 96);
             return Math.Max(1, (int)Math.Round(
                 logicalPixels * dpi / 96d,
                 MidpointRounding.AwayFromZero));
@@ -399,6 +434,38 @@ namespace NoFences.Theming
                 fontCache[key] = cached;
                 return cached;
             }
+        }
+
+        private static readonly EventHandler DropDownHandleCreatedHandler = (sender, _) =>
+        {
+            if (sender is ToolStripDropDown dropDown && dropDown.Tag is DropDownThemeState state)
+            {
+                ConfigureDropDownHandle(dropDown.Handle, state.Profile, state.Theme);
+            }
+        };
+
+        private sealed class DropDownThemeState
+        {
+            public MenuThemeProfile Profile { get; set; }
+            public ThemeDefinition Theme { get; set; }
+        }
+
+        private static void ConfigureDropDownHandle(IntPtr hwnd, MenuThemeProfile profile, ThemeDefinition theme)
+        {
+            if (hwnd == IntPtr.Zero)
+                return;
+
+            bool hasCorners = profile.ContainerCornerRadius > 0;
+            bool usesNativeCorners = DropShadow.TrySetNativeCorners(hwnd, hasCorners);
+            if (usesNativeCorners)
+            {
+                DropShadow.SetShadow(hwnd, true);
+            }
+            BlurUtil.SetBlur(
+                hwnd,
+                profile.Style == ThemeMenuStyle.Standard &&
+                theme.EnableBlur &&
+                profile.Opacity < 1d);
         }
     }
 

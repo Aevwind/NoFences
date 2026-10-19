@@ -59,6 +59,9 @@ namespace NoFences.Model
         /// <summary>DPI 缩放后的窗口高度</summary>
         public int Height { get; set; }
 
+        /// <summary>上一次保存时的显示器 DPI（用于跨 DPI 环境或分辨率变动时的基准缩放）</summary>
+        public uint LastDpi { get; set; }
+
         /// <summary>是否锁定（锁定后不可拖动/调整大小）</summary>
         public bool Locked { get; set; }
 
@@ -99,11 +102,32 @@ namespace NoFences.Model
             set => titlePaddingY = Math.Max(0, Math.Min(50, value));
         }
 
-        /// <summary>标题栏文字行高倍数（向后兼容保留，默认 1.5）</summary>
+        private int titleFontSize = 0;
+
+        /// <summary>标题文本字体大小（逻辑像素，最低 10px，默认 14）</summary>
+        public int TitleFontSize
+        {
+            get
+            {
+                if (titleFontSize < 10)
+                {
+                    // 旧配置只迁移一次，避免标题栏自适应改变高度后再次推算出不同的字号。
+                    int padding = TitlePosition == FenceTitlePosition.Left || TitlePosition == FenceTitlePosition.Right
+                        ? TitlePaddingX
+                        : TitlePaddingY;
+                    int derived = TitleHeight - padding * 2;
+                    titleFontSize = (derived >= 10 && derived <= 40) ? derived : 14;
+                }
+                return titleFontSize;
+            }
+            set => titleFontSize = Math.Max(10, Math.Min(40, value));
+        }
+
+        /// <summary>标题栏文字行高倍数（固定为 1.0）</summary>
         public float TitleLineHeight
         {
-            get => titleLineHeight <= 0.1f ? 1.5f : titleLineHeight;
-            set => titleLineHeight = Math.Max(0.5f, Math.Min(3.0f, value <= 0.1f ? 1.5f : value));
+            get => titleLineHeight <= 0.1f ? 1.0f : titleLineHeight;
+            set => titleLineHeight = 1.0f;
         }
 
         /// <summary>栅栏内图标与文本的缩放比例百分比（10~200，默认 100）</summary>

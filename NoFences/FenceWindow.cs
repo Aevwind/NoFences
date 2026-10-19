@@ -53,6 +53,29 @@ namespace NoFences
         private bool isMinified;
         private int prevWidth;
         private int prevHeight;
+        private uint currentDpi = 96;
+        private bool isInitializing = true;
+        private bool isUpdatingFenceZOrder;
+        private static FenceWindow interactedFence;
+        private bool isContextMenuInteraction;
+
+        private const int WH_MOUSE_LL = 14;
+        private const int WM_LBUTTONDOWN = 0x0201;
+        private const int WM_RBUTTONDOWN = 0x0204;
+        private const int WM_MBUTTONDOWN = 0x0207;
+        private const int WM_XBUTTONDOWN = 0x020B;
+        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+        private readonly LowLevelMouseProc interactionMouseHookProc;
+        private IntPtr interactionMouseHook;
+
+        private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        private const uint WINEVENT_OUTOFCONTEXT = 0;
+        /// <summary>接收前台窗口切换通知，委托在整个窗口生命周期内保持存活。</summary>
+        private delegate void WinEventProc(IntPtr hook, uint eventType, IntPtr window,
+            int objectId, int childId, uint eventThread, uint eventTime);
+        private readonly WinEventProc interactionForegroundHookProc;
+        private IntPtr interactionForegroundHook;
+        private IntPtr interactionForegroundWindow;
 
         private const int WM_MOVING = 0x0216;
         private const int WM_ENTERSIZEMOVE = 0x0231;
@@ -196,15 +219,27 @@ namespace NoFences
         }
 
         /// <summary>
+        /// 获取当前窗口所处显示器的实时设备 DPI（不受 WinForms 缓存滞后影响）。
+        /// </summary>
+        private uint GetCurrentDpi()
+        {
+            if (!isInitializing && IsHandleCreated)
+            {
+                uint dpi = GetDpiForWindow(Handle);
+                if (dpi > 0)
+                    return dpi;
+            }
+            return currentDpi > 0 ? currentDpi : 96;
+        }
+
+        /// <summary>
         /// 将设备像素（物理像素）转换为逻辑像素（96 DPI 坐标）。
         /// 使用原生 GetDpiForWindow 而非 CreateGraphics().DpiX，
         /// 因为 WinForms 会缓存 DPI 值，DPI 变更后不会自动更新。
         /// </summary>
         private int DevicePixelsToLogical(int devicePixels)
         {
-            uint dpi = 96;
-            if (IsHandleCreated)
-                dpi = GetDpiForWindow(Handle);
+            uint dpi = GetCurrentDpi();
             return (int)Math.Round(devicePixels * 96.0 / dpi);
         }
 
@@ -214,10 +249,141 @@ namespace NoFences
         /// </summary>
         private int LogicalPixelsToDevice(int logicalPixels)
         {
-            uint dpi = 96;
-            if (IsHandleCreated)
-                dpi = GetDpiForWindow(Handle);
+            uint dpi = GetCurrentDpi();
             return (int)Math.Round(logicalPixels * dpi / 96.0, MidpointRounding.AwayFromZero);
+        }
+
+        /// <summary>
+        /// 处理显示器 DPI 变化，按建议的新尺寸或新旧 DPI 比例更新窗口大小及标题栏和图标度量。
+        /// 拖拽窗口跨屏时，以当前鼠标坐标为缩放原点（Anchor），避免跨屏临界区尺寸反复跳变和闪烁。
+        /// </summary>
+        private void HandleDpiChanged(uint newDpi, RECT? suggestedRect)
+        {
+            if (newDpi == 0) newDpi = 96;
+            if (newDpi == currentDpi) return;
+            // 必须先按旧 DPI 还原展开矩形，收起态的 Left/Top 可能已经包含底部或右侧的收起偏移。
+            Rectangle expandedBounds = GetCurrentExpandedBounds();
+            StopMinifyAnimation();
+            uint oldDpi = currentDpi;
+            currentDpi = newDpi;
+            float ratio = oldDpi > 0 ? (float)newDpi / oldDpi : 1f;
+
+            bool isDragging = hasMoveOrigin || (Control.MouseButtons & MouseButtons.Left) != 0;
+            Point cursor = Cursor.Position;
+            float relX = Width > 0 ? (cursor.X - Left) / (float)Width : 0.5f;
+            float relY = Height > 0 ? (cursor.Y - Top) / (float)Height : 0.5f;
+            relX = Math.Max(0f, Math.Min(1f, relX));
+            relY = Math.Max(0f, Math.Min(1f, relY));
+
+            if (isMinified)
+            {
+                prevWidth = (int)Math.Round(expandedBounds.Width * ratio);
+                prevHeight = (int)Math.Round(expandedBounds.Height * ratio);
+
+                titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
+                Rectangle expanded = new Rectangle(expandedBounds.Location, new Size(prevWidth, prevHeight));
+                Rectangle collapsed = GetCollapsedBoundsFromExpanded(expanded);
+                int newW = collapsed.Width;
+                int newH = collapsed.Height;
+
+                int newLeft;
+                int newTop;
+                if (isDragging)
+                {
+                    newLeft = cursor.X - (int)Math.Round(relX * newW);
+                    newTop = cursor.Y - (int)Math.Round(relY * newH);
+                    moveStartLocation = new Point(newLeft, newTop);
+                    moveStartCursor = cursor;
+                    hasMoveOrigin = true;
+                }
+                else
+                {
+                    newLeft = collapsed.X;
+                    newTop = collapsed.Y;
+                }
+
+                SetBoundsForMinifyState(new Rectangle(newLeft, newTop, newW, newH));
+                if (fenceInfo != null)
+                {
+                    Rectangle updatedExpanded = GetCurrentExpandedBounds();
+                    fenceInfo.PosX = updatedExpanded.X;
+                    fenceInfo.PosY = updatedExpanded.Y;
+                    fenceInfo.Width = updatedExpanded.Width;
+                    fenceInfo.Height = updatedExpanded.Height;
+                    fenceInfo.LastDpi = currentDpi;
+                }
+            }
+            else
+            {
+                int newW;
+                int newH;
+                if (suggestedRect.HasValue)
+                {
+                    RECT r = suggestedRect.Value;
+                    newW = r.Right - r.Left;
+                    newH = r.Bottom - r.Top;
+                    if (newW <= 0 || newH <= 0)
+                    {
+                        newW = (int)Math.Round(expandedBounds.Width * ratio);
+                        newH = (int)Math.Round(expandedBounds.Height * ratio);
+                    }
+                }
+                else
+                {
+                    newW = (int)Math.Round(expandedBounds.Width * ratio);
+                    newH = (int)Math.Round(expandedBounds.Height * ratio);
+                }
+
+                int newLeft;
+                int newTop;
+                if (isDragging)
+                {
+                    newLeft = cursor.X - (int)Math.Round(relX * newW);
+                    newTop = cursor.Y - (int)Math.Round(relY * newH);
+                    moveStartLocation = new Point(newLeft, newTop);
+                    moveStartCursor = cursor;
+                    hasMoveOrigin = true;
+                }
+                else if (suggestedRect.HasValue)
+                {
+                    newLeft = suggestedRect.Value.Left;
+                    newTop = suggestedRect.Value.Top;
+                }
+                else
+                {
+                    newLeft = expandedBounds.Left;
+                    newTop = expandedBounds.Top;
+                }
+
+                SetWindowPos(Handle, IntPtr.Zero, newLeft, newTop, newW, newH, SWP_NOZORDER | SWP_NOACTIVATE);
+                if (fenceInfo != null)
+                {
+                    fenceInfo.Width = newW;
+                    fenceInfo.Height = newH;
+                    fenceInfo.PosX = newLeft;
+                    fenceInfo.PosY = newTop;
+                    fenceInfo.LastDpi = currentDpi;
+                }
+                prevWidth = newW;
+                prevHeight = newH;
+                titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
+            }
+
+            ApplyIconMetrics();
+            ThemeUi.ApplyToContextMenu(appContextMenu, currentTheme, (int)currentDpi);
+        }
+
+        /// <summary>
+        /// 主动检测当前窗口 DPI 是否与记录值不一致，用于弥补拖拽跨屏时系统未发送 WM_DPICHANGED 的情况。
+        /// </summary>
+        private void CheckAndHandleDpiChange()
+        {
+            if (!IsHandleCreated) return;
+            uint winDpi = GetDpiForWindow(Handle);
+            if (winDpi > 0 && winDpi != currentDpi)
+            {
+                HandleDpiChanged(winDpi, null);
+            }
         }
 
         /// <summary>
@@ -238,6 +404,16 @@ namespace NoFences
                 lastDesktopIconSpacing = deviceSpacing > 0 ? deviceSpacing : -1;
                 lastDesktopIconSize = logicalDesktopIconSize > 0 ? logicalDesktopIconSize : -1;
 
+                IntPtr hwndListView = FindDesktopListView();
+                uint desktopDpi = hwndListView != IntPtr.Zero ? GetDpiForWindow(hwndListView) : 96;
+                if (desktopDpi == 0) desktopDpi = 96;
+                uint currentWinDpi = GetCurrentDpi();
+
+                if (deviceSpacing > 0 && desktopDpi != currentWinDpi)
+                {
+                    deviceSpacing = (int)Math.Round(deviceSpacing * (double)currentWinDpi / desktopDpi);
+                }
+
                 // 3. 通过 SPI_GETICONMETRICS 读取系统图标度量（获取字体信息）
                 iconMetrics = new ICONMETRICS();
                 iconMetrics.cbSize = (uint)Marshal.SizeOf(typeof(ICONMETRICS));
@@ -248,7 +424,11 @@ namespace NoFences
                 if (deviceSpacing > 0)
                     deviceItemWidth = deviceSpacing;
                 else if (iconMetrics.iHorzSpacing > 0)
-                    deviceItemWidth = LogicalPixelsToDevice(iconMetrics.iHorzSpacing);
+                {
+                    uint sysDpi = WindowUtil.GetSystemDpi();
+                    int logicalSpacing = (int)Math.Round(iconMetrics.iHorzSpacing * 96.0 / sysDpi);
+                    deviceItemWidth = LogicalPixelsToDevice(logicalSpacing);
+                }
                 else
                     deviceItemWidth = LogicalPixelsToDevice(75);
 
@@ -372,6 +552,7 @@ namespace NoFences
         /// </summary>
         private void ApplyIconMetrics()
         {
+            titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
             var prevIconSize = iconSize;
             LoadAndApplyMetrics();
 
@@ -410,6 +591,9 @@ namespace NoFences
         /// 不能使用 CreateFontIndirect + Font.FromHfont，因为 FromHfont 仅支持 TrueType 字体，
         /// 而桌面图标字体可能是非 TrueType 字体（如 MS Sans Serif），会抛出异常。
         /// 改为直接读取 LOGFONT 各字段，手动构造 Font 对象。
+        /// 字体必须按当前窗口所在显示器的设备像素（GraphicsUnit.Pixel）创建，
+        /// 遵循与桌面图标相同的缩放逻辑（参考 LogicalPixelsToDevice），
+        /// 避免 GDI+ 对 Point 单位字体始终按系统主屏 DPI 计算导致跨屏缩放失真。
         /// </summary>
         private Font CreateIconFontFromLogFont()
         {
@@ -417,32 +601,47 @@ namespace NoFences
             {
                 var lf = iconMetrics.lfFont;
                 string familyName = ResolveDesktopFontFamily(lf.lfFaceName);
-                // lfHeight 是逻辑单位，需要转换为磅值（point）
-                float fontSize = Math.Abs(lf.lfHeight);
-                using (var g = CreateGraphics())
+                // SPI_GETICONMETRICS 返回的 lfHeight 是基于系统主显示器 DPI（System DPI）计算的物理像素高度。
+                // 先将其归一化为 96 DPI 的标准逻辑像素高度（标准 9pt 字体在 96 DPI 下为 12px）
+                uint sysDpi = WindowUtil.GetSystemDpi();
+                float logicalPixelHeight = 12f;
+                if (lf.lfHeight != 0)
                 {
-                    fontSize = fontSize * 72f / g.DpiY;
+                    logicalPixelHeight = Math.Abs(lf.lfHeight) * 96f / (float)sysDpi;
                 }
-                if (fontSize < 6f) fontSize = 9f; // 最小字号保护
-                fontSize = Math.Max(2f, fontSize * (GetEffectiveScalePercent() / 100f));
+                else
+                {
+                    float points = SystemFonts.IconTitleFont != null ? SystemFonts.IconTitleFont.SizeInPoints : 9f;
+                    logicalPixelHeight = points * 96f / 72f;
+                }
+
+                if (logicalPixelHeight < 6f || logicalPixelHeight > 48f)
+                    logicalPixelHeight = 12f;
+
+                // 参考图标缩放逻辑：将逻辑像素转换为当前窗口所在显示器的设备像素，并叠加栅栏自身缩放比例
+                float deviceFontSize = (float)(logicalPixelHeight * GetCurrentDpi() / 96.0);
+                float fontSize = Math.Max(2f, deviceFontSize * (GetEffectiveScalePercent() / 100f));
+
                 var style = FontStyle.Regular;
                 if (lf.lfWeight >= 700) style |= FontStyle.Bold;
                 if (lf.lfItalic != 0) style |= FontStyle.Italic;
                 if (lf.lfUnderline != 0) style |= FontStyle.Underline;
                 if (lf.lfStrikeOut != 0) style |= FontStyle.Strikeout;
-                return new Font(familyName, fontSize, style);
+                return new Font(familyName, fontSize, style, GraphicsUnit.Pixel);
             }
             catch
             {
-                float fallbackSize = Math.Max(2f, 9f * (GetEffectiveScalePercent() / 100f));
+                float fallbackLogical = 12f;
+                float fallbackDevice = (float)(fallbackLogical * GetCurrentDpi() / 96.0);
+                float fallbackSize = Math.Max(2f, fallbackDevice * (GetEffectiveScalePercent() / 100f));
                 string fallbackFamily = SystemFonts.IconTitleFont?.FontFamily?.Name ?? "Segoe UI";
-                return new Font(fallbackFamily, fallbackSize, FontStyle.Regular);
+                return new Font(fallbackFamily, fallbackSize, FontStyle.Regular, GraphicsUnit.Pixel);
             }
         }
 
         /// <summary>
         /// 重新创建所有字体（先释放旧字体防止 GDI 资源泄漏）。
-        /// 标题字体基于标题栏高度计算，图标字体从系统图标度量获取。
+        /// 标题字体基于标题文本大小（行高固定为 1）按设备像素创建，图标字体从系统图标度量获取。
         /// </summary>
         private void ReloadFonts()
         {
@@ -451,25 +650,23 @@ namespace NoFences
             uiBoldFont?.Dispose();
 
             string familyName = ResolveDesktopFontFamily(iconMetrics.lfFont.lfFaceName);
-            float availableSpace = IsVerticalTitleBar
-                ? Math.Max(12f, logicalTitleHeight - (fenceInfo?.TitlePaddingX ?? 10) * 2)
-                : Math.Max(12f, logicalTitleHeight - (fenceInfo?.TitlePaddingY ?? 6) * 2);
-            float titleSize = Math.Max(8f, Math.Min(32f, (float)Math.Floor(availableSpace * 0.72f)));
+            int deviceFontSize = Math.Max(8, LogicalPixelsToDevice(fenceInfo?.TitleFontSize ?? 14));
             try
             {
-                titleFont = new Font(familyName, titleSize, FontStyle.Regular);
+                titleFont = new Font(familyName, deviceFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
             }
             catch
             {
-                titleFont = new Font("Segoe UI", titleSize, FontStyle.Regular);
+                titleFont = new Font("Segoe UI", deviceFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
             }
+            int boldPixelSize = Math.Max(8, LogicalPixelsToDevice(13));
             try
             {
-                uiBoldFont = new Font(familyName, 9.5f, FontStyle.Bold);
+                uiBoldFont = new Font(familyName, boldPixelSize, FontStyle.Bold, GraphicsUnit.Pixel);
             }
             catch
             {
-                uiBoldFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+                uiBoldFont = new Font("Segoe UI", boldPixelSize, FontStyle.Bold, GraphicsUnit.Pixel);
             }
             iconFont = CreateIconFontFromLogFont();
         }
@@ -477,11 +674,30 @@ namespace NoFences
         public FenceWindow(FenceInfo fenceInfo)
         {
             this.fenceInfo = fenceInfo ?? throw new ArgumentNullException(nameof(fenceInfo));
+            interactionMouseHookProc = InteractionMouseHookCallback;
+            interactionForegroundHookProc = InteractionForegroundHookCallback;
             this.fenceInfo.ScalePercent = GetEffectiveScalePercent();
             currentTheme = ThemeManager.Instance.CurrentTheme;
 
-            // 先初始化组件以创建窗口句柄（后续 DPI 相关操作需要 Handle）
+            // 1. 设置为手动布局，由持久化坐标直接决定初始位置，避免系统先按 CW_USEDEFAULT 在主屏创建窗口再搬移产生的跨屏 DPI 抖动
+            StartPosition = FormStartPosition.Manual;
+
+            // 2. 初始化组件（包含上下文菜单与窗体基础设置）
             InitializeComponent();
+
+            // 3. 从持久化位置解析目标显示器的实时 DPI，使后续度量和字体初始化直接采用正确 DPI
+            uint targetDpi = WindowUtil.GetDpiForPoint(new Point(fenceInfo.PosX, fenceInfo.PosY));
+            currentDpi = targetDpi > 0 ? targetDpi : 96;
+
+            // 若显示器 DPI 在离线期间发生改变，在此按比例调整一次窗口尺寸
+            if (this.fenceInfo.LastDpi > 0 && this.fenceInfo.LastDpi != currentDpi)
+            {
+                float ratio = (float)currentDpi / this.fenceInfo.LastDpi;
+                this.fenceInfo.Width = (int)Math.Round(this.fenceInfo.Width * ratio);
+                this.fenceInfo.Height = (int)Math.Round(this.fenceInfo.Height * ratio);
+            }
+            this.fenceInfo.LastDpi = currentDpi;
+
             SetStyle(
                 ControlStyles.AllPaintingInWmPaint |
                 ControlStyles.OptimizedDoubleBuffer |
@@ -491,27 +707,45 @@ namespace NoFences
             UpdateStyles();
             InitializeScaleSubMenu();
             InitializeSortSubMenu();
+            shellContextMenu.MenuClosed += ShellContextMenu_MenuClosed;
             MouseDown += FenceWindow_MouseDown;
             MouseUp += FenceWindow_MouseUp;
             ApplyContextMenuLocalization();
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
             autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
 
-            // 应用 Windows 视觉效果。DWM 投影需等主题圆角确定后再设置，
+            // 4. 应用持久化边界（在创建句柄前先设置 Bounds，使 CreateWindowEx 直接在目标显示器以持久化尺寸创建 HWND）
+            ApplyPersistedBounds();
+
+            // 5. 应用 Windows 视觉效果。DWM 投影需等主题圆角确定后再设置，
             // 否则矩形投影会残留在圆角外侧并在拖动时形成不透明角块。
             WindowUtil.HideFromAltTab(Handle);  // 从 Alt+Tab 隐藏
             DesktopUtil.GlueToDesktop(Handle);  // 粘附到桌面 Progman 窗口
+            PlaceFenceAboveDesktop();
 
-            // 必须在 Handle 创建后计算图标度量（需要正确的 DPI 信息）
+            Text = fenceInfo.Name;
+            if (IsHandleCreated)
+            {
+                uint winDpi = GetDpiForWindow(Handle);
+                if (winDpi > 0)
+                {
+                    currentDpi = winDpi;
+                    this.fenceInfo.LastDpi = winDpi;
+                }
+            }
+
+            // 6. 必须在定位到目标显示器后计算图标度量（此时 currentDpi 正确反映所在显示器）
             LoadAndApplyMetrics();
 
             // 创建缩略图生成器（iconSize 已是设备像素尺寸）
             thumbnailProvider = new ThumbnailProvider(iconSize);
 
-            // 每 1.5 秒同时轮询桌面图标间距与边长（捕获 Ctrl+滚轮缩放）
+            // 每 1.5 秒同时轮询桌面图标间距与边长（捕获 Ctrl+滚轮缩放及 DPI 变化）
             iconMetricsPollTimer = new Timer { Interval = 1500 };
             iconMetricsPollTimer.Tick += (s, e) =>
             {
+                if (isInitializing || hasMoveOrigin || (Control.MouseButtons & MouseButtons.Left) != 0) return;
+                CheckAndHandleDpiChange();
                 int curSpacing = GetDesktopIconSpacing();
                 int curIconSize = DesktopUtil.GetDesktopIconSize();
                 bool spacingChanged = curSpacing > 0 &&
@@ -525,14 +759,15 @@ namespace NoFences
             };
             iconMetricsPollTimer.Start();
 
-            // 标题栏高度：逻辑像素，根据内边距自适应扩展
-            int minNeeded = HeightDialog.CalculateMinTitleHeight(
+            // 标题栏高度：逻辑像素，根据标题文本大小与内边距自动撑开（行高固定为 1）
+            int adaptedHeight = HeightDialog.CalculateAdaptedTitleHeight(
                 fenceInfo.TitlePosition,
+                fenceInfo.TitleFontSize,
                 fenceInfo.TitlePaddingX,
                 fenceInfo.TitlePaddingY);
-            logicalTitleHeight = Math.Max(minNeeded, (fenceInfo.TitleHeight < 16 || fenceInfo.TitleHeight > 100) ? 35 : fenceInfo.TitleHeight);
+            logicalTitleHeight = adaptedHeight;
             fenceInfo.TitleHeight = logicalTitleHeight;
-            titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
+            titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
             
             this.MouseWheel += FenceWindow_MouseWheel;
             thumbnailProvider.IconThumbnailLoaded += ThumbnailProvider_IconThumbnailLoaded;
@@ -541,9 +776,6 @@ namespace NoFences
             ReloadFonts();
 
             AllowDrop = true; // 允许拖放文件到栅栏
-
-            Text = fenceInfo.Name;
-            ApplyPersistedBounds();
 
             prevWidth = Width;
             prevHeight = Height;
@@ -588,6 +820,9 @@ namespace NoFences
 
             appContextMenu.Closed += (s, e) =>
             {
+                bool keepInFront = e.CloseReason != ToolStripDropDownCloseReason.AppFocusChange &&
+                    (e.CloseReason != ToolStripDropDownCloseReason.AppClicked || IsPointInsideFenceInteraction(MousePosition));
+                EndContextMenuInteraction(keepInFront);
                 if (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition))
                 {
                     Minify();
@@ -878,19 +1113,17 @@ namespace NoFences
             }
         }
 
-        /// <summary>校正损坏尺寸和已断开显示器留下的屏幕外坐标。</summary>
+        /// <summary>校正损坏尺寸和已断开显示器留下的屏幕外坐标，恢复持久化的窗口大小与位置。</summary>
         private void ApplyPersistedBounds()
         {
-            int minimumWidth = Math.Max(itemWidth + itemPadding * 2, LogicalPixelsToDevice(120));
-            int minimumHeight = Math.Max(
-                titleHeight + itemHeight + itemPadding * 2,
-                LogicalPixelsToDevice(100));
-            int requestedWidth = Math.Max(minimumWidth, fenceInfo.Width);
-            int requestedHeight = Math.Max(minimumHeight, fenceInfo.Height);
             Rectangle workingArea = Screen.FromPoint(
                 new Point(fenceInfo.PosX, fenceInfo.PosY)).WorkingArea;
-            int width = Math.Max(1, Math.Min(requestedWidth, workingArea.Width));
-            int height = Math.Max(1, Math.Min(requestedHeight, workingArea.Height));
+            int width = fenceInfo.Width > 0 ? fenceInfo.Width : LogicalPixelsToDevice(300);
+            int height = fenceInfo.Height > 0 ? fenceInfo.Height : LogicalPixelsToDevice(300);
+            int minW = LogicalPixelsToDevice(60);
+            int minH = LogicalPixelsToDevice(40);
+            width = Math.Max(minW, Math.Min(width, workingArea.Width));
+            height = Math.Max(minH, Math.Min(height, workingArea.Height));
             int x = Math.Max(
                 workingArea.Left,
                 Math.Min(fenceInfo.PosX, workingArea.Right - width));
@@ -916,7 +1149,7 @@ namespace NoFences
 
             BackColor = currentTheme.MainPanelColor;
             ApplyContextMenuIcons();
-            ThemeUi.ApplyToContextMenu(appContextMenu, currentTheme);
+            ThemeUi.ApplyToContextMenu(appContextMenu, currentTheme, (int)GetCurrentDpi());
             darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
             ReloadBackgroundImage();
             ReloadFonts();
@@ -1101,6 +1334,12 @@ namespace NoFences
         /// </summary>
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == WM_WINDOWPOSCHANGING)
+                PreserveFenceZOrder(m.LParam);
+
+            if (m.Msg == WM_NCLBUTTONDOWN || m.Msg == WM_NCRBUTTONDOWN)
+                KeepInteractedFenceOnTop();
+
             if (m.Msg == WM_ENTERSIZEMOVE)
             {
                 hasMoveOrigin = true;
@@ -1110,12 +1349,13 @@ namespace NoFences
             else if (m.Msg == WM_EXITSIZEMOVE)
             {
                 hasMoveOrigin = false;
+                CheckAndHandleDpiChange();
             }
             else if (m.Msg == WM_MOVING && AppSettingsManager.Instance.AutoSnapEnabled)
             {
                 var rect = Marshal.PtrToStructure<RECT>(m.LParam);
-                int width = rect.Width;
-                int height = rect.Height;
+                int width = Width > 0 ? Width : rect.Width;
+                int height = Height > 0 ? Height : rect.Height;
 
                 if (!hasMoveOrigin)
                 {
@@ -1134,7 +1374,7 @@ namespace NoFences
                 rect.Top = targetTop;
                 rect.Right = targetLeft + width;
                 rect.Bottom = targetTop + height;
-                Marshal.StructureToPtr(rect, m.LParam, true);
+                Marshal.StructureToPtr(rect, m.LParam, false);
                 m.Result = (IntPtr)1;
                 return;
             }
@@ -1206,17 +1446,27 @@ namespace NoFences
                 return;
             }
 
-            // 系统 DPI 变化（设置 → 显示 → 缩放），重新计算图标尺寸
+            // 系统 DPI 变化（设置 → 显示 → 缩放），按建议矩形调整窗口尺寸并重新计算图标与标题栏度量
             if (m.Msg == WM_DPICHANGED)
             {
-                ApplyIconMetrics();
+                if (isInitializing)
+                {
+                    m.Result = IntPtr.Zero;
+                    return;
+                }
+                uint newDpiX = (uint)(m.WParam.ToInt32() & 0xFFFF);
+                uint newDpi = newDpiX > 0 ? newDpiX : 96;
+                RECT suggestedRect = (RECT)Marshal.PtrToStructure(m.LParam, typeof(RECT));
+                HandleDpiChanged(newDpi, suggestedRect);
+                m.Result = IntPtr.Zero;
+                return;
             }
 
-            // 鼠标点击激活：当多个栅栏重叠时，点击当前栅栏应将其置顶于其他栅栏之上，且保持正常交互响应
+            // 鼠标交互只提升当前分区，不激活共享桌面所有者，避免连带抬高或闪动其他分区。
             if (m.Msg == WM_MOUSEACTIVATE)
             {
-                SetWindowPos(Handle, HWND_TOP, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
-                m.Result = (IntPtr)MA_ACTIVATE;
+                KeepInteractedFenceOnTop();
+                m.Result = (IntPtr)MA_NOACTIVATE;
                 return;
             }
 
@@ -1263,6 +1513,438 @@ namespace NoFences
                     m.Result = new IntPtr(HTRIGHT);
             }
         }
+
+        /// <summary>切换唯一浮起的分区，先将上一个交互分区归还桌面，再提升当前分区。</summary>
+        private void KeepInteractedFenceOnTop()
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated)
+                return;
+
+            FenceWindow previous = interactedFence;
+            interactedFence = this;
+            if (previous != null && previous != this && !previous.IsDisposed && !previous.Disposing)
+            {
+                if (previous.appContextMenu != null && previous.appContextMenu.Visible)
+                    previous.appContextMenu.Close(ToolStripDropDownCloseReason.AppClicked);
+                previous.ReturnFenceToDesktop();
+            }
+
+            InstallInteractionMouseHook();
+            InstallInteractionForegroundHook();
+            // 只有当前分区临时置顶；同时监听外部点击与前台切换，覆盖 Alt+Tab 等没有鼠标消息的退出路径。
+            // 监听安装失败时保留普通层级；菜单交互仍由菜单关闭事件负责解除置顶。
+            bool canTrackInteraction = interactionMouseHook != IntPtr.Zero && interactionForegroundHook != IntPtr.Zero;
+            SetFenceZOrder(canTrackInteraction || isContextMenuInteraction ? HWND_TOPMOST : HWND_TOP);
+        }
+
+        /// <summary>取消当前分区的浮起状态，并将其放回桌面窗口层级。</summary>
+        private void ReturnFenceToDesktop()
+        {
+            if (interactedFence == this)
+                interactedFence = null;
+            UninstallInteractionMouseHook();
+            UninstallInteractionForegroundHook();
+            PlaceFenceAboveDesktop();
+        }
+
+        /// <summary>解除临时置顶并放回实际桌面窗口上方，避免 Win+D 后沉到桌面背景后面。</summary>
+        private void PlaceFenceAboveDesktop()
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated)
+                return;
+
+            IntPtr desktopView = FindDesktopListView();
+            IntPtr desktop = desktopView != IntPtr.Zero
+                ? GetAncestor(desktopView, 2) // GA_ROOT：桌面图标实际所在的 Progman 或 WorkerW。
+                : FindWindow("Progman", null);
+            if (desktop == IntPtr.Zero)
+            {
+                SetFenceZOrder(HWND_BOTTOM);
+                return;
+            }
+
+            // SetWindowPos 插在指定窗口之后，因此取桌面前一个窗口，保持面板位于应用与桌面之间。
+            IntPtr insertAfter = GetWindow(desktop, 3); // GW_HWNDPREV
+            if (insertAfter == Handle)
+                insertAfter = GetWindow(Handle, 3);
+
+            bool precedingIsTopmost = false;
+            if (insertAfter != IntPtr.Zero)
+            {
+                try
+                {
+                    precedingIsTopmost = (GetWindowLong(insertAfter, (int)GetWindowLongFields.GWL_EXSTYLE).ToInt64() &
+                        (long)ExtendedWindowStyles.WS_EX_TOPMOST) != 0;
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    // 邻接窗口可能在查询期间关闭，按桌面前没有普通窗口处理。
+                    insertAfter = IntPtr.Zero;
+                }
+            }
+
+            if (insertAfter == IntPtr.Zero || precedingIsTopmost)
+            {
+                // 桌面已经位于普通窗口的顶部时，显式解除置顶；插到任务栏等置顶窗口后会继续置顶。
+                bool isTopmost = (GetWindowLong(Handle, (int)GetWindowLongFields.GWL_EXSTYLE).ToInt64() &
+                    (long)ExtendedWindowStyles.WS_EX_TOPMOST) != 0;
+                SetFenceZOrder(isTopmost ? HWND_NOTOPMOST : HWND_TOP);
+                return;
+            }
+
+            SetFenceZOrder(insertAfter);
+        }
+
+        /// <summary>单独激活菜单宿主并保持当前分区层级，避免未激活的面板使 WinForms 菜单误判失焦。</summary>
+        private void BeginContextMenuInteraction()
+        {
+            isContextMenuInteraction = true;
+            KeepInteractedFenceOnTop();
+
+            // 与 NotifyIcon 的菜单处理一致：先激活独立的隐藏宿主，使 WinForms 记录有效的活动窗口。
+            // 此宿主没有 Progman 所有者，激活它不会连带抬高共享桌面所有者的其他分区。
+            IntPtr menuOwner = shellContextMenu.Handle;
+            if (SetForegroundWindow(menuOwner))
+                interactionForegroundWindow = menuOwner; // 同步记录，避免延迟通知漏掉紧接着的 Alt+Tab。
+            else
+                SetActiveWindow(menuOwner);
+        }
+
+        /// <summary>结束菜单状态；外部点击或切换分区时归还桌面，在分区内继续操作时保留当前交互。</summary>
+        private void EndContextMenuInteraction(bool keepInFront)
+        {
+            if (!isContextMenuInteraction)
+                return;
+
+            isContextMenuInteraction = false;
+            if (keepInFront && interactedFence == this)
+                KeepInteractedFenceOnTop();
+            else
+                ReturnFenceToDesktop();
+        }
+
+        /// <summary>原生菜单退出跟踪后先解除分区置顶，再由 Shell 执行命令或打开属性等窗口。</summary>
+        private void ShellContextMenu_MenuClosed(object sender, EventArgs e)
+        {
+            EndContextMenuInteraction(keepInFront: false);
+        }
+
+        /// <summary>在应用菜单显示前保护面板层级，菜单取消打开或抛出异常时及时解除保护。</summary>
+        private void ShowAppContextMenu(Point location)
+        {
+            BeginContextMenuInteraction();
+            try
+            {
+                appContextMenu.Show(this, location);
+            }
+            finally
+            {
+                if (!appContextMenu.Visible)
+                    EndContextMenuInteraction(keepInFront: true);
+            }
+        }
+
+        /// <summary>在窗口层级改变前阻止系统或菜单带来的被动重排，避免其他分区短暂浮到前面。</summary>
+        private void PreserveFenceZOrder(IntPtr windowPosition)
+        {
+            if (isUpdatingFenceZOrder || windowPosition == IntPtr.Zero)
+                return;
+
+            WINDOWPOS position = Marshal.PtrToStructure<WINDOWPOS>(windowPosition);
+            if ((position.flags & SWP_NOZORDER) != 0)
+                return;
+
+            position.flags |= SWP_NOZORDER;
+            Marshal.StructureToPtr(position, windowPosition, false);
+        }
+
+        /// <summary>仅在启动、鼠标交互或菜单生命周期内调整当前分区层级，不激活共享所有者。</summary>
+        private void SetFenceZOrder(IntPtr insertAfter)
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated)
+                return;
+
+            bool wasUpdatingFenceZOrder = isUpdatingFenceZOrder;
+            isUpdatingFenceZOrder = true;
+            try
+            {
+                SetWindowPos(
+                    Handle,
+                    insertAfter,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
+            finally
+            {
+                isUpdatingFenceZOrder = wasUpdatingFenceZOrder;
+            }
+        }
+
+        /// <summary>交互期间监听外部点击，保证只有当前分区临时置顶且能及时归还桌面。</summary>
+        private void InstallInteractionMouseHook()
+        {
+            if (interactionMouseHook != IntPtr.Zero)
+                return;
+
+            interactionMouseHook = SetWindowsHookEx(
+                WH_MOUSE_LL,
+                interactionMouseHookProc,
+                GetModuleHandle(null),
+                0);
+        }
+
+        /// <summary>解除当前分区的外部点击监听。</summary>
+        private void UninstallInteractionMouseHook()
+        {
+            IntPtr hook = interactionMouseHook;
+            interactionMouseHook = IntPtr.Zero;
+            if (hook != IntPtr.Zero)
+                UnhookWindowsHookEx(hook);
+        }
+
+        /// <summary>仅在分区交互期间监听前台切换，补足不激活窗口时缺失的失活通知。</summary>
+        private void InstallInteractionForegroundHook()
+        {
+            if (interactionForegroundHook != IntPtr.Zero)
+                return;
+
+            interactionForegroundWindow = GetForegroundWindow();
+            interactionForegroundHook = SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                IntPtr.Zero,
+                interactionForegroundHookProc,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT);
+        }
+
+        /// <summary>解除前台切换监听，并清除本次交互的前台窗口记录。</summary>
+        private void UninstallInteractionForegroundHook()
+        {
+            IntPtr hook = interactionForegroundHook;
+            interactionForegroundHook = IntPtr.Zero;
+            interactionForegroundWindow = IntPtr.Zero;
+            if (hook != IntPtr.Zero)
+                UnhookWinEvent(hook);
+        }
+
+        /// <summary>在安装钩子的 UI 线程处理前台切换，忽略已经过期或属于其他交互的异步通知。</summary>
+        private void InteractionForegroundHookCallback(IntPtr hook, uint eventType, IntPtr window,
+            int objectId, int childId, uint eventThread, uint eventTime)
+        {
+            try
+            {
+                if (hook == IntPtr.Zero || hook != interactionForegroundHook ||
+                    eventType != EVENT_SYSTEM_FOREGROUND || window == IntPtr.Zero ||
+                    IsDisposed || Disposing || !IsHandleCreated || interactedFence != this ||
+                    window != GetForegroundWindow())
+                    return;
+
+                ProcessInteractionForegroundChange(window);
+            }
+            catch
+            {
+                // 前台事件回调不能让异常越过非托管边界。
+            }
+        }
+
+        /// <summary>切换到其他应用时结束临时置顶；当前分区、所属对话框和菜单之间切换时保留交互。</summary>
+        private void ProcessInteractionForegroundChange(IntPtr window)
+        {
+            if (window == interactionForegroundWindow)
+                return;
+
+            interactionForegroundWindow = window;
+            if (IsFenceInteractionWindow(window) ||
+                IsOpenDropDownWindow(appContextMenu, window))
+                return;
+
+            ReturnFenceToDesktop();
+            if (appContextMenu != null && appContextMenu.Visible)
+                appContextMenu.Close(ToolStripDropDownCloseReason.AppFocusChange);
+            else if (isContextMenuInteraction)
+                EndMenu();
+        }
+
+        /// <summary>按窗口句柄识别当前菜单及展开的子菜单，避免鼠标停在菜单时误判前台切换。</summary>
+        private static bool IsOpenDropDownWindow(ToolStripDropDown dropDown, IntPtr window)
+        {
+            if (dropDown == null || !dropDown.Visible)
+                return false;
+            if (dropDown.IsHandleCreated && GetAncestor(window, 2) == dropDown.Handle)
+                return true;
+
+            foreach (ToolStripItem item in dropDown.Items)
+            {
+                ToolStripDropDownItem dropDownItem = item as ToolStripDropDownItem;
+                if (dropDownItem != null && dropDownItem.HasDropDownItems &&
+                    IsOpenDropDownWindow(dropDownItem.DropDown, window))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>接收交互期间的鼠标按下，继续传递原始消息以保留其他窗口的正常点击行为。</summary>
+        private IntPtr InteractionMouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            IntPtr hook = interactionMouseHook;
+            try
+            {
+                int message = wParam.ToInt32();
+                if (nCode >= 0 && interactedFence == this &&
+                    IsMouseButtonDownMessage(message))
+                {
+                    LowLevelMouseHookStruct mouseData =
+                        (LowLevelMouseHookStruct)Marshal.PtrToStructure(
+                            lParam,
+                            typeof(LowLevelMouseHookStruct));
+                    ProcessInteractionMouseDown(mouseData.Point);
+                }
+            }
+            catch
+            {
+                // 鼠标钩子回调不能让异常越过非托管边界。
+            }
+
+            return CallNextHookEx(hook, nCode, wParam, lParam);
+        }
+
+        /// <summary>点击菜单、面板及其对话框时保留交互；点击其他窗口时解除置顶并关闭应用菜单。</summary>
+        private void ProcessInteractionMouseDown(Point screenPoint)
+        {
+            if (appContextMenu != null && appContextMenu.Visible)
+            {
+                if (IsPointInsideOpenContextMenu(screenPoint))
+                    return;
+
+                if (!IsPointInsideFenceInteraction(screenPoint))
+                    ReturnFenceToDesktop();
+                appContextMenu.Close(ToolStripDropDownCloseReason.AppClicked);
+                return;
+            }
+
+            // 原生菜单自行跟踪外部点击，并通过 MenuClosed 在执行菜单命令前结束交互。
+            if (!isContextMenuInteraction && !IsPointInsideFenceInteraction(screenPoint))
+                ReturnFenceToDesktop();
+        }
+
+        /// <summary>按实际命中窗口判断点击是否仍属于当前分区，兼容覆盖面板的其他窗口。</summary>
+        private bool IsPointInsideFenceInteraction(Point screenPoint)
+        {
+            return IsFenceInteractionWindow(WindowFromPoint(screenPoint));
+        }
+
+        /// <summary>识别当前分区、独立菜单宿主及它们拥有的窗口，不将共用桌面所有者的其他分区视为当前交互。</summary>
+        private bool IsFenceInteractionWindow(IntPtr window)
+        {
+            IntPtr current = GetAncestor(window, 2); // GA_ROOT：先从子控件找到顶层窗口。
+            for (int depth = 0; current != IntPtr.Zero && depth < 32; depth++)
+            {
+                if (current == Handle || current == shellContextMenu.Handle)
+                    return true;
+                current = GetWindow(current, 4); // GW_OWNER：仅沿当前窗口的拥有者链查找。
+            }
+            return false;
+        }
+
+        /// <summary>判断鼠标消息是否为任意按键按下。</summary>
+        private static bool IsMouseButtonDownMessage(int message)
+        {
+            return message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN ||
+                message == WM_MBUTTONDOWN || message == WM_XBUTTONDOWN;
+        }
+
+        /// <summary>判断屏幕坐标是否位于应用右键菜单或其当前展开的任意子菜单内。</summary>
+        private bool IsPointInsideOpenContextMenu(Point screenPoint)
+        {
+            return IsPointInsideOpenDropDown(appContextMenu, screenPoint);
+        }
+
+        /// <summary>递归检查可见菜单及已展开子菜单的屏幕范围。</summary>
+        private bool IsPointInsideOpenDropDown(ToolStripDropDown dropDown, Point screenPoint)
+        {
+            if (dropDown == null || !dropDown.Visible)
+                return false;
+
+            Rectangle screenBounds = new Rectangle(
+                dropDown.PointToScreen(Point.Empty),
+                dropDown.Size);
+            if (screenBounds.Contains(screenPoint))
+                return true;
+
+            foreach (ToolStripItem item in dropDown.Items)
+            {
+                ToolStripDropDownItem dropDownItem = item as ToolStripDropDownItem;
+                if (dropDownItem != null &&
+                    IsPointInsideOpenDropDown(dropDownItem.DropDown, screenPoint))
+                    return true;
+            }
+
+            return false;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LowLevelMouseHookStruct
+        {
+            public Point Point;
+            public uint MouseData;
+            public uint Flags;
+            public uint Time;
+            public IntPtr ExtraInfo;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(
+            int idHook,
+            LowLevelMouseProc callback,
+            IntPtr moduleHandle,
+            uint threadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(
+            IntPtr hook,
+            int nCode,
+            IntPtr wParam,
+            IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string moduleName);
+
+        /// <summary>注册指定范围的窗口事件通知。</summary>
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr moduleHandle,
+            WinEventProc callback, uint processId, uint threadId, uint flags);
+
+        /// <summary>释放窗口事件通知钩子。</summary>
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWinEvent(IntPtr hook);
+
+        /// <summary>读取当前前台窗口，用于过滤延迟送达的前台切换事件。</summary>
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        /// <summary>将独立菜单宿主设为前台活动窗口，供 WinForms 正确跟踪菜单交互。</summary>
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetForegroundWindow(IntPtr window);
+
+        /// <summary>前台激活受系统限制时，仍为本线程的菜单设置稳定的活动窗口。</summary>
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetActiveWindow(IntPtr window);
+
+        /// <summary>前台切到外部窗口时结束当前线程的原生菜单跟踪。</summary>
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool EndMenu();
 
         /// <summary>
         /// 计算窗口移动时的边缘与邻近桌面分区自动吸附坐标。
@@ -1577,7 +2259,7 @@ namespace NoFences
                 scaleMenuControl.ScalePercent = GetEffectiveScalePercent();
             // 可见性和勾选状态会触发 ToolStrip 重新布局；在这些状态更新后应用
             // 主题，确保空白处右键弹出的整个菜单窗口都按当前主题重新绘制。
-            ThemeUi.ApplyToContextMenu(appContextMenu, currentTheme);
+            ThemeUi.ApplyToContextMenu(appContextMenu, currentTheme, (int)GetCurrentDpi());
         }
 
         /// <summary>拖放进入：仅接受文件拖放（锁定状态下拒绝）。</summary>
@@ -1632,7 +2314,7 @@ namespace NoFences
             // 等待保存逻辑而只显示底层 Acrylic 表面。
             Refresh();
 
-            if (isUpdatingMinifyBounds || isAnimatingMinify)
+            if (isInitializing || isUpdatingMinifyBounds || isAnimatingMinify)
                 return;
 
             if (!isMinified)
@@ -1648,6 +2330,7 @@ namespace NoFences
                 fenceInfo.PosY = expanded.Y;
                 fenceInfo.Width = expanded.Width;
                 fenceInfo.Height = expanded.Height;
+                fenceInfo.LastDpi = currentDpi;
                 Save();
             });
         }
@@ -1728,7 +2411,7 @@ namespace NoFences
         /// <summary>鼠标离开：尝试向标题栏方向收起窗口。选中状态不取消，由用户点击其他条目或空白区域来改变。</summary>
         private void FenceWindow_MouseLeave(object sender, EventArgs e)
         {
-            if (isDraggingItem)
+            if (isDraggingItem || isContextMenuInteraction)
                 return;
 
             iconManagementHoverTarget = 0;
@@ -1902,7 +2585,7 @@ namespace NoFences
                 SetBoundsForMinifyState(finalBounds);
                 Refresh();
 
-                bool menuOpen = (appContextMenu != null && appContextMenu.Visible) ||
+                bool menuOpen = isContextMenuInteraction || (appContextMenu != null && appContextMenu.Visible) ||
                     (scaleToolStripMenuItem?.DropDown != null && scaleToolStripMenuItem.DropDown.Visible);
                 if (!isIconManagementMode && !menuOpen && minifyToolStripMenuItem.Checked)
                 {
@@ -1976,7 +2659,7 @@ namespace NoFences
         /// </summary>
         private void Minify(bool? animate = null)
         {
-            bool menuOpen = (appContextMenu != null && appContextMenu.Visible) ||
+            bool menuOpen = isContextMenuInteraction || (appContextMenu != null && appContextMenu.Visible) ||
                 (scaleToolStripMenuItem?.DropDown != null && scaleToolStripMenuItem.DropDown.Visible);
             if (!isIconManagementMode && !menuOpen && minifyToolStripMenuItem.Checked && !isMinified)
             {
@@ -2028,6 +2711,39 @@ namespace NoFences
 
             shouldRunDoubleClick = true;
             Refresh();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            uint dpi = GetDpiForWindow(Handle);
+            if (dpi > 0)
+                currentDpi = dpi;
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (IsHandleCreated)
+            {
+                uint winDpi = GetDpiForWindow(Handle);
+                if (winDpi > 0)
+                {
+                    currentDpi = winDpi;
+                    if (fenceInfo != null)
+                        fenceInfo.LastDpi = winDpi;
+                }
+            }
+            isInitializing = false;
+
+            // 初次显示时放在桌面上方，不抢占其他应用的前景位置。
+            PlaceFenceAboveDesktop();
+        }
+
+        /// <summary>初次显示分区时不激活窗口，避免启动时抢占前景焦点。</summary>
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
         }
 
         /// <summary>
@@ -2340,7 +3056,7 @@ namespace NoFences
             hasHoverUpdated = false;
         }
 
-        /// <summary>按当前栅栏的标题栏位置（顶/底/左/右）、文本对齐方式、内边距与行高倍数绘制标题文字。</summary>
+        /// <summary>按当前栅栏的标题栏位置（顶/底/左/右）、文本对齐方式、内边距绘制标题文字（行高固定为 1）。</summary>
         private void DrawTitleBarText(Graphics graphics, ThemeDefinition theme, Rectangle titleBounds)
         {
             if (titleBounds.Width <= 0 || titleBounds.Height <= 0 || string.IsNullOrEmpty(Text))
@@ -2362,6 +3078,7 @@ namespace NoFences
 
             int padX = LogicalPixelsToDevice(fenceInfo.TitlePaddingX);
             int padY = LogicalPixelsToDevice(fenceInfo.TitlePaddingY);
+            int deviceFontSize = Math.Max(8, LogicalPixelsToDevice(fenceInfo.TitleFontSize));
 
             using (var titleTextBrush = new SolidBrush(theme.TitleTextColor))
             {
@@ -2388,9 +3105,10 @@ namespace NoFences
 
                     if (elements.Count > 0)
                     {
-                        float fontHeight = titleFont.GetHeight(graphics);
-                        float stepY = fontHeight * 1.05f;
-                        float totalSpan = (elements.Count - 1) * stepY + fontHeight;
+                        // 行高固定为 1：字符高度与步进严格等于字体设备像素大小
+                        float singleCharH = deviceFontSize;
+                        float stepY = singleCharH * 1.0f;
+                        float totalSpan = (elements.Count - 1) * stepY + singleCharH;
 
                         float startY;
                         switch (primaryAlignment)
@@ -2416,7 +3134,7 @@ namespace NoFences
                             for (int i = 0; i < elements.Count; i++)
                             {
                                 float charY = startY + i * stepY;
-                                if (charY + fontHeight <= textRect.Y)
+                                if (charY + singleCharH <= textRect.Y)
                                     continue;
                                 if (charY >= textRect.Bottom)
                                     break;
@@ -2424,12 +3142,12 @@ namespace NoFences
                                 // 接近底部且还有后续字符时绘制省略号
                                 if (charY + stepY > textRect.Bottom && i < elements.Count - 1)
                                 {
-                                    var ellipsisRect = new RectangleF(textRect.X, charY, textRect.Width, fontHeight);
+                                    var ellipsisRect = new RectangleF(textRect.X, charY, textRect.Width, singleCharH);
                                     graphics.DrawString("…", titleFont, titleTextBrush, ellipsisRect, charFormat);
                                     break;
                                 }
 
-                                var charRect = new RectangleF(textRect.X, charY, textRect.Width, fontHeight);
+                                var charRect = new RectangleF(textRect.X, charY, textRect.Width, singleCharH);
                                 graphics.DrawString(elements[i], titleFont, titleTextBrush, charRect, charFormat);
                             }
                         }
@@ -2437,7 +3155,7 @@ namespace NoFences
                 }
                 else
                 {
-                    // 横排标题栏：padX 为左右内边距，padY 为上下内边距（自适应扩展标题高度）
+                    // 横排标题栏：padX 为左右内边距，padY 为上下内边距（标题栏高度由字体大小与 padY 撑开）
                     int effectivePadX = Math.Min(padX, Math.Max(0, (titleBounds.Width - 4) / 2));
                     int effectivePadY = Math.Min(padY, Math.Max(0, (titleBounds.Height - 4) / 2));
                     var textRect = new RectangleF(
@@ -2449,9 +3167,10 @@ namespace NoFences
                     string[] lines = Text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
                     if (lines.Length > 1)
                     {
-                        float fontHeight = titleFont.GetHeight(graphics);
-                        float stepY = fontHeight * 1.15f;
-                        float totalH = (lines.Length - 1) * stepY + fontHeight;
+                        // 行高固定为 1：每行高度与垂直步进严格等于字体设备像素大小
+                        float singleLineH = deviceFontSize;
+                        float stepY = singleLineH * 1.0f;
+                        float totalH = (lines.Length - 1) * stepY + singleLineH;
                         float startY = textRect.Y + (textRect.Height - totalH) / 2f;
 
                         using (var lineFormat = new StringFormat
@@ -2465,9 +3184,9 @@ namespace NoFences
                             for (int i = 0; i < lines.Length; i++)
                             {
                                 float lineY = startY + i * stepY;
-                                if (lineY + fontHeight > textRect.Bottom)
+                                if (lineY + singleLineH > textRect.Bottom)
                                     break;
-                                var lineRect = new RectangleF(textRect.X, lineY, textRect.Width, fontHeight);
+                                var lineRect = new RectangleF(textRect.X, lineY, textRect.Width, singleLineH);
                                 graphics.DrawString(lines[i], titleFont, titleTextBrush, lineRect, lineFormat);
                             }
                         }
@@ -2537,6 +3256,7 @@ namespace NoFences
             if (!isIconManagementMode && mouseOver && shouldRunDoubleClick)
             {
                 shouldRunDoubleClick = false;
+                ReturnFenceToDesktop();
                 entry.Open();
             }
 
@@ -3322,6 +4042,7 @@ namespace NoFences
         private void renameToolStripMenuItem_Click(object sender, EventArgs e)
         {
             var dialog = new EditDialog(Text);
+            dialog.StartPosition = FormStartPosition.CenterParent;
             if (dialog.ShowDialog(this) == DialogResult.OK)
             {
                 Text = dialog.NewName;
@@ -3342,8 +4063,8 @@ namespace NoFences
         {
             using (var dialog = new ThemeConfigurationDialog())
             {
-                dialog.StartPosition = FormStartPosition.CenterScreen;
-                dialog.ShowDialog();
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.ShowDialog(this);
             }
         }
 
@@ -3365,6 +4086,11 @@ namespace NoFences
         /// <summary>窗口关闭：如果最后一个栅栏关闭则退出应用。</summary>
         private void FenceWindow_FormClosed(object sender, FormClosedEventArgs e)
         {
+            if (interactedFence == this)
+                interactedFence = null;
+            isContextMenuInteraction = false;
+            UninstallInteractionMouseHook();
+            UninstallInteractionForegroundHook();
             StopMinifyAnimation();
             if (minifyAnimationTimer != null)
             {
@@ -3392,6 +4118,7 @@ namespace NoFences
             thumbnailProvider.Dispose();
             iconMetricsPollTimer.Stop();
             iconMetricsPollTimer.Dispose();
+            shellContextMenu.MenuClosed -= ShellContextMenu_MenuClosed;
             shellContextMenu.Dispose();
             if (managedItemsWatcher != null)
             {
@@ -3432,6 +4159,10 @@ namespace NoFences
             {
                 lock (saveLock)
                 {
+                    if (fenceInfo != null && currentDpi > 0)
+                    {
+                        fenceInfo.LastDpi = currentDpi;
+                    }
                     FenceManager.Instance.UpdateFence(fenceInfo);
                 }
             }
@@ -3454,14 +4185,22 @@ namespace NoFences
         /// <summary>窗口位置变化：节流保存新坐标（4 秒延迟）。</summary>
         private void FenceWindow_LocationChanged(object sender, EventArgs e)
         {
-            if (isUpdatingMinifyBounds || isAnimatingMinify)
+            if (isInitializing || isUpdatingMinifyBounds || isAnimatingMinify)
                 return;
+
+            if (!hasMoveOrigin)
+            {
+                CheckAndHandleDpiChange();
+            }
 
             throttledMove.Run(() =>
             {
                 Rectangle expanded = GetCurrentExpandedBounds();
                 fenceInfo.PosX = expanded.X;
                 fenceInfo.PosY = expanded.Y;
+                fenceInfo.Width = expanded.Width;
+                fenceInfo.Height = expanded.Height;
+                fenceInfo.LastDpi = currentDpi;
                 Save();
             });
         }
@@ -3482,6 +4221,7 @@ namespace NoFences
         private void titleSizeToolStripMenuItem_Click(object sender, EventArgs e)
         {
             // 备份修改前的初始状态，供取消时回滚
+            int origFontSize = fenceInfo.TitleFontSize;
             int origHeight = fenceInfo.TitleHeight;
             FenceTitlePosition origPosition = fenceInfo.TitlePosition;
             FenceTitleTextAlignment origAlignment = fenceInfo.TitleTextAlignment;
@@ -3493,18 +4233,18 @@ namespace NoFences
                 ExpandFromMinified(animate: false);
 
             using (var dialog = new HeightDialog(
-                fenceInfo.TitleHeight,
+                fenceInfo.TitleFontSize,
                 fenceInfo.TitlePosition,
                 fenceInfo.TitleTextAlignment,
                 fenceInfo.TitlePaddingX,
                 fenceInfo.TitlePaddingY))
             {
-                dialog.StartPosition = FormStartPosition.CenterScreen;
+                dialog.StartPosition = FormStartPosition.CenterParent;
 
                 // 交互时实时预览变更
-                dialog.PreviewChanged += (pos, align, h, padX, padY) =>
+                dialog.PreviewChanged += (pos, align, fontSize, h, padX, padY) =>
                 {
-                    ApplyTitleSettings(pos, align, h, padX, padY);
+                    ApplyTitleSettings(pos, align, fontSize, h, padX, padY);
                 };
 
                 if (dialog.ShowDialog(this) == DialogResult.OK)
@@ -3513,6 +4253,7 @@ namespace NoFences
                     ApplyTitleSettings(
                         dialog.TitlePosition,
                         dialog.TitleTextAlignment,
+                        dialog.TitleFontSize,
                         dialog.TitleHeight,
                         dialog.TitlePaddingX,
                         dialog.TitlePaddingY);
@@ -3523,7 +4264,7 @@ namespace NoFences
                 else
                 {
                     // 取消或直接关闭：完全恢复修改前的初始配置
-                    ApplyTitleSettings(origPosition, origAlignment, origHeight, origPaddingX, origPaddingY);
+                    ApplyTitleSettings(origPosition, origAlignment, origFontSize, origHeight, origPaddingX, origPaddingY);
                     if (wasMinified || (minifyToolStripMenuItem.Checked && !Bounds.Contains(MousePosition)))
                         Minify(animate: false);
                     Refresh();
@@ -3531,23 +4272,25 @@ namespace NoFences
             }
         }
 
-        /// <summary>应用标题栏配置并使标题栏尺寸自适应内边距，刷新界面渲染。</summary>
+        /// <summary>应用标题栏配置并根据标题文本大小与内边距自动撑开标题栏尺寸，刷新界面渲染。</summary>
         private void ApplyTitleSettings(
             FenceTitlePosition position,
             FenceTitleTextAlignment alignment,
+            int fontSize,
             int height,
             int padX,
             int padY)
         {
             fenceInfo.TitlePosition = position;
             fenceInfo.TitleTextAlignment = alignment;
+            fenceInfo.TitleFontSize = fontSize;
             fenceInfo.TitlePaddingX = padX;
             fenceInfo.TitlePaddingY = padY;
 
-            int minNeeded = HeightDialog.CalculateMinTitleHeight(position, padX, padY);
-            logicalTitleHeight = Math.Max(height, minNeeded);
+            int adaptedHeight = HeightDialog.CalculateAdaptedTitleHeight(position, fontSize, padX, padY);
+            logicalTitleHeight = adaptedHeight;
             fenceInfo.TitleHeight = logicalTitleHeight;
-            titleHeight = LogicalToDeviceUnits(logicalTitleHeight);
+            titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
 
             ReloadFonts();
             Refresh();
@@ -3571,6 +4314,9 @@ namespace NoFences
             if (e.Button != MouseButtons.Right)
                 return;
 
+            // 原生 Shell 菜单会进入自己的模态循环；打开前确保当前分区位于前面。
+            KeepInteractedFenceOnTop();
+
             if (hoveringItem != null && !ModifierKeys.HasFlag(Keys.Shift))
             {
                 // 右键条目 → Windows Shell 右键菜单
@@ -3580,9 +4326,17 @@ namespace NoFences
                     shellItem);
                 try
                 {
-                    shellContextMenu.ShowContextMenu(
-                        new[] { new FileInfo(shellItem) },
-                        MousePosition);
+                    BeginContextMenuInteraction();
+                    try
+                    {
+                        shellContextMenu.ShowContextMenu(
+                            new[] { new FileInfo(shellItem) },
+                            MousePosition);
+                    }
+                    finally
+                    {
+                        EndContextMenuInteraction(keepInFront: false);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -3624,7 +4378,7 @@ namespace NoFences
             else
             {
                 // Shift+右键或空白处 → 应用菜单
-                appContextMenu.Show(this, e.Location);
+                ShowAppContextMenu(e.Location);
             }
         }
 
@@ -3670,6 +4424,7 @@ namespace NoFences
         /// </summary>
         private void FenceWindow_MouseDown(object sender, MouseEventArgs e)
         {
+            KeepInteractedFenceOnTop();
             if (e.Button != MouseButtons.Left || isIconManagementMode || lockedToolStripMenuItem.Checked)
                 return;
 

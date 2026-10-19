@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.Runtime.InteropServices;
 
 namespace NoFences.Win32
@@ -25,6 +26,7 @@ namespace NoFences.Win32
         public const UInt32 SWP_NOMOVE = 0x0002;
         public const UInt32 SWP_NOACTIVATE = 0x0010;
         public const UInt32 SWP_NOZORDER = 0x0004;
+        public const UInt32 SWP_NOOWNERZORDER = 0x0200;
         public const int WM_ACTIVATEAPP = 0x001C;
         public const int WM_ACTIVATE = 0x0006;
         public const int WM_SETFOCUS = 0x0007;
@@ -33,12 +35,29 @@ namespace NoFences.Win32
         public const int WM_SIZING = 0x0214;          // 窗口拖动调整大小中
         public static readonly IntPtr HWND_TOP = IntPtr.Zero;
         public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
+        public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+        public const int WM_NCLBUTTONDOWN = 0x00A1;
+        public const int WM_NCRBUTTONDOWN = 0x00A4;
         public const int WM_MOUSEACTIVATE = 0x0021;
         public const int MA_ACTIVATE = 1;
         public const int MA_ACTIVATEANDEAT = 2;
         public const int MA_NOACTIVATE = 3;
         public const int MA_NOACTIVATEANDEAT = 4;
         public const int WM_WINDOWPOSCHANGING = 0x0046;
+
+        /// <summary>窗口位置与层级变更参数，对应 Win32 WINDOWPOS，句柄字段兼容 x64。</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WINDOWPOS
+        {
+            public IntPtr hwnd;
+            public IntPtr hwndInsertAfter;
+            public int x;
+            public int y;
+            public int cx;
+            public int cy;
+            public uint flags;
+        }
 
         // WM_SIZING 时 wParam 指示正在拖拽的边框/角
         public const int WMSZ_LEFT = 1;
@@ -118,6 +137,15 @@ namespace NoFences.Win32
 
         [DllImport("user32.dll")]
         public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+        /// <summary>返回屏幕坐标实际命中的窗口。</summary>
+        [DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(Point point);
+        /// <summary>读取窗口的父链或顶层窗口。</summary>
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetAncestor(IntPtr window, uint flags);
+        /// <summary>读取窗口的拥有者或相邻层级窗口。</summary>
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr window, uint command);
         [DllImport("user32.dll", SetLastError = true)]
         public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
         [DllImport("user32.dll", SetLastError = true)]
@@ -128,12 +156,63 @@ namespace NoFences.Win32
         /// <summary>获取指定窗口的当前 DPI（Windows 10 1607+）。不受 WinForms 缓存影响，可获取实时 DPI。</summary>
         [DllImport("user32.dll")]
         public static extern uint GetDpiForWindow(IntPtr hWnd);
+
+        /// <summary>获取系统主显示器的 DPI（Windows 10 1607+）。</summary>
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForSystem();
+
+        /// <summary>获取系统主显示器的 DPI，获取失败或异常时回退到 96 DPI。</summary>
+        public static uint GetSystemDpi()
+        {
+            try
+            {
+                uint dpi = GetDpiForSystem();
+                if (dpi > 0)
+                    return dpi;
+            }
+            catch
+            {
+            }
+            return 96;
+        }
+
+        private const uint MONITOR_DEFAULTTONEAREST = 2;
+        private const int MDT_EFFECTIVE_DPI = 0;
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromPoint(Point pt, uint dwFlags);
+
+        [DllImport("shcore.dll")]
+        private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
+        /// <summary>获取指定屏幕坐标点所在显示器的实时 DPI（Windows 8.1+），获取失败时回退到主屏幕 DPI 或 96 DPI。</summary>
+        public static uint GetDpiForPoint(Point pt)
+        {
+            try
+            {
+                IntPtr hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+                if (hMonitor != IntPtr.Zero)
+                {
+                    uint dpiX, dpiY;
+                    if (GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, out dpiX, out dpiY) == 0 && dpiX > 0)
+                    {
+                        return dpiX;
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return GetSystemDpi();
+        }
+
         #region 窗口样式与属性操作
 
         /// <summary>扩展窗口样式枚举。</summary>
         [Flags]
         public enum ExtendedWindowStyles
         {
+            WS_EX_TOPMOST = 0x00000008, // 临时置顶窗口
             WS_EX_TOOLWINDOW = 0x00000080, // 工具窗口：从 Alt+Tab 和任务栏中隐藏
         }
 
@@ -271,7 +350,6 @@ namespace NoFences.Win32
         /// </summary>
         public static void HideFromAltTab(IntPtr Handle)
         {
-            SetWindowPos(Handle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE);
             int exStyle = (int)GetWindowLong(Handle, (int)GetWindowLongFields.GWL_EXSTYLE);
             exStyle |= (int)ExtendedWindowStyles.WS_EX_TOOLWINDOW;
             SetWindowLong(Handle, (int)GetWindowLongFields.GWL_EXSTYLE, (IntPtr)exStyle);

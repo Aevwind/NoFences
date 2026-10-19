@@ -161,11 +161,11 @@ namespace NoFences.Theming
             {
                 Style = ThemeMenuStyle.Windows11,
                 FontFamilyName = "Segoe UI Variable Text",
-                FontSize = 10f,
-                FontStyle = FontStyle.Bold,
+                FontSize = 9f,
+                FontStyle = FontStyle.Regular,
                 TextVerticalOffset = 0,
                 MinimumWidth = 170,
-                ItemHeight = 34,
+                ItemHeight = 32,
                 SeparatorHeight = 9,
                 ContainerCornerRadius = 8,
                 ItemCornerRadius = 4,
@@ -180,9 +180,9 @@ namespace NoFences.Theming
                 DrawClassicThreeDimensionalBorder = false,
                 DrawChevronArrow = true,
                 DrawEmbossedDisabledText = false,
-                DropShadowEnabled = true,
-                // 保持背景透明与轻微材质感效果
-                Opacity = 0.98d,
+                DropShadowEnabled = false,
+                // Windows 11 原生风格菜单使用不透明背景，由 DWM 统一渲染硬件圆角与系统阴影
+                Opacity = 1d,
                 ImageMarginColor = theme.MenuBackgroundColor,
                 BorderOuterColor = ThemeDrawing.Mix(
                     theme.MenuBackgroundColor,
@@ -211,8 +211,8 @@ namespace NoFences.Theming
             {
                 Style = ThemeMenuStyle.Standard,
                 FontFamilyName = theme.FontFamilyName,
-                FontSize = 9.5f,
-                FontStyle = FontStyle.Bold,
+                FontSize = 9f,
+                FontStyle = FontStyle.Regular,
                 TextVerticalOffset = 0,
                 MinimumWidth = 170,
                 ItemHeight = 26,
@@ -230,7 +230,7 @@ namespace NoFences.Theming
                 DrawClassicThreeDimensionalBorder = false,
                 DrawChevronArrow = false,
                 DrawEmbossedDisabledText = false,
-                DropShadowEnabled = true,
+                DropShadowEnabled = false,
                 // 默认半透明面板使用 0.92，在保留桌面材质感和背景透明效果的同时确保菜单文字清晰。
                 Opacity = theme.EnableBlur && theme.MainPanelOpacityPercent < 100
                     ? 0.92d

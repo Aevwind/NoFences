@@ -154,10 +154,32 @@ namespace NoFences.Theming
             loadedEditorColorMode = draftDarkMode ? ThemeColorMode.Dark : ThemeColorMode.Light;
         }
 
+        private float GetDpiScale()
+        {
+            if (IsHandleCreated)
+            {
+                uint dpi = GetDpiForWindow(Handle);
+                if (dpi > 0)
+                    return dpi / 96f;
+            }
+            return DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            float scale = GetDpiScale();
+            MinimumSize = new Size((int)Math.Round(860 * scale), (int)Math.Round(620 * scale));
+            ClientSize = new Size((int)Math.Round(980 * scale), (int)Math.Round(690 * scale));
+            ApplySettingsPagePalette(draftDarkMode);
+            LayoutActiveCategoryCards();
+            LayoutBottomActionBar();
+        }
+
         private void InitializeWindowChrome()
         {
             Text = K(LKeys.SettingsWindowTitle);
-            StartPosition = FormStartPosition.CenterScreen;
+            StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.None;
             MinimumSize = new Size(860, 620);
             ClientSize = new Size(980, 690);
@@ -908,7 +930,7 @@ namespace NoFences.Theming
             if (category == null || !categoryCards.TryGetValue(category.Id, out var cards))
                 return;
 
-            float scale = DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+            float scale = GetDpiScale();
             int padH = Math.Max(20, (int)Math.Round(28 * scale));
             int gapY = Math.Max(14, (int)Math.Round(18 * scale));
             int scrollY = scrollViewport.AutoScrollPosition.Y;
@@ -934,7 +956,7 @@ namespace NoFences.Theming
 
         private void LayoutBottomActionBar()
         {
-            float scale = DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+            float scale = GetDpiScale();
             int padRight = Math.Max(20, (int)Math.Round(28 * scale));
             int gap = Math.Max(10, (int)Math.Round(12 * scale));
             int btnWidth = Math.Max(82, (int)Math.Round(88 * scale));
@@ -961,7 +983,7 @@ namespace NoFences.Theming
             scrollViewport.BackColor = currentPalette.ContentBackground;
             bottomActionBar.BackColor = currentPalette.ContentBackground;
 
-            float scale = DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+            float scale = GetDpiScale();
             int sideWidth = Math.Max(195, (int)Math.Round(210 * scale));
             sidebar.Width = sideWidth;
             titleBar.SidebarWidth = sideWidth;
@@ -1513,7 +1535,7 @@ namespace NoFences.Theming
             if (category == null)
                 return;
 
-            float scale = DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+            float scale = GetDpiScale();
             int padH = Math.Max(20, (int)Math.Round(28 * scale));
             int titleTop = (int)Math.Round(16 * scale);
             int textWidth = Math.Max(100, pageHeaderPanel.Width - padH * 2);
@@ -1552,7 +1574,7 @@ namespace NoFences.Theming
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             g.Clear(currentPalette.ContentBackground);
 
-            float scale = DeviceDpi > 0 ? DeviceDpi / 96f : 1f;
+            float scale = GetDpiScale();
             int padH = Math.Max(20, (int)Math.Round(28 * scale));
 
             // 顶部分隔线
@@ -1597,6 +1619,28 @@ namespace NoFences.Theming
 
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == WM_DPICHANGED)
+            {
+                base.WndProc(ref m);
+                RECT r = (RECT)Marshal.PtrToStructure(m.LParam, typeof(RECT));
+                SetWindowPos(
+                    Handle,
+                    IntPtr.Zero,
+                    r.Left,
+                    r.Top,
+                    r.Right - r.Left,
+                    r.Bottom - r.Top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+                float scale = GetDpiScale();
+                MinimumSize = new Size((int)Math.Round(860 * scale), (int)Math.Round(620 * scale));
+                ApplySettingsPagePalette(draftDarkMode);
+                LayoutActiveCategoryCards();
+                LayoutBottomActionBar();
+                Invalidate(true);
+                m.Result = IntPtr.Zero;
+                return;
+            }
+
             base.WndProc(ref m);
 
             if (m.Msg == WM_NCHITTEST && WindowState == FormWindowState.Normal)
