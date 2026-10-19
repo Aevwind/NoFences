@@ -101,6 +101,8 @@
     <Compile Include="Theming\ThemeUi.cs" />
     <Compile Include="Util\Extensions.cs" />
     <Compile Include="Util\EntryHitTest.cs" />
+    <Compile Include="Util\FenceEntrySnapshot.cs" />
+    <Compile Include="Util\IconGridLayout.cs" />
     <Compile Include="Util\ThrottledExecution.cs" />
     <Compile Include="Util\ThumbnailProvider.cs" />
     <Compile Include="Util\XmlFileStore.cs" />

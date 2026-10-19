@@ -46,7 +46,6 @@ namespace NoFences
         private string selectedItem;
         private string hoveringItem;
         private bool shouldUpdateSelection;
-        private bool hasSelectionUpdated;
         private bool hasHoverUpdated;
         private bool isMinified;
         private int prevWidth;
@@ -97,8 +96,7 @@ namespace NoFences
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Rectangle> entryHitBounds =
             new Dictionary<string, Rectangle>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, FenceEntry> entryCache =
-            new Dictionary<string, FenceEntry>(StringComparer.OrdinalIgnoreCase);
+        private readonly FenceEntrySnapshot entrySnapshot = new FenceEntrySnapshot();
         private Rectangle iconManagementConfirmBounds;
         private Rectangle iconManagementCancelBounds;
         private int iconManagementHoverTarget;
@@ -2686,6 +2684,45 @@ namespace NoFences
                 GetContentViewport(isIconManagementMode ? GetIconManagementFooterHeight() : 0), location);
         }
 
+        /// <summary>根据当前布局解析点击，优先检查展开文字，不依赖上一帧可能已失效的命中缓存。</summary>
+        private string HitTestEntryLayout(Graphics graphics, IconGridLayout grid, Rectangle viewport, Point location)
+        {
+            if (!viewport.Contains(location))
+                return null;
+
+            int selectedIndex = entrySnapshot.IndexOfPath(selectedItem);
+            if (selectedIndex >= 0)
+            {
+                FenceEntry selected = entrySnapshot[selectedIndex];
+                if (MeasureEntryHitBounds(graphics, selected, grid.GetItemBounds(selectedIndex), true).Contains(location))
+                    return selected.Path;
+            }
+
+            grid.GetVisibleRange(entrySnapshot.Count, out int firstIndex, out int endIndex);
+            for (int index = firstIndex; index < endIndex; index++)
+            {
+                FenceEntry entry = entrySnapshot[index];
+                if (MeasureEntryHitBounds(graphics, entry, grid.GetItemBounds(index), false).Contains(location))
+                    return entry.Path;
+            }
+            return null;
+        }
+
+        /// <summary>测量标准或选中展开区域，供绘制和当前布局点击命中共同使用。</summary>
+        private Rectangle MeasureEntryHitBounds(Graphics graphics, FenceEntry entry, Rectangle cell, bool expandSelected)
+        {
+            int textInset = Math.Min(6, Math.Max(1, itemWidth / 6));
+            int textWidth = Math.Max(4, itemWidth - textInset * 2);
+            SizeF textSize = graphics.MeasureString(entry.Name, iconFont,
+                new SizeF(textWidth, expandSelected ? 9999 : textHeight),
+                expandSelected ? expandedIconTextFormat : standardIconTextFormat);
+            if (expandSelected && textSize.Height <= textHeight)
+                textSize = graphics.MeasureString(entry.Name, iconFont,
+                    new SizeF(textWidth, textHeight), standardIconTextFormat);
+            return new Rectangle(cell.X - 2, cell.Y - 2,
+                itemWidth + 2, iconSize + (int)textSize.Height + itemPadding / 3 + 2);
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -2772,20 +2809,20 @@ namespace NoFences
                 ? GetIconManagementFooterHeight()
                 : 0;
             Rectangle contentViewport = GetContentViewport(managementFooterHeight);
+            IconGridLayout grid = PrepareIconGridLayout(contentViewport);
+            Point mousePosition = PointToClient(MousePosition);
 
-            // 在进入条目遍历前预先根据当前命中矩形更新点击选中项，
-            // 确保点击溢出文本条目时在同一渲染帧立即触发 needsExpand 展开，无需等待鼠标移出。
-            if (!isIconManagementMode && shouldUpdateSelection && entryHitBounds.Count > 0)
+            // 点击按本帧布局处理，即使列表或滚动变化已清空上一帧的命中缓存也保持展开区域优先。
+            if (!isIconManagementMode && shouldUpdateSelection)
             {
-                selectedItem = HitTestEntry(PointToClient(MousePosition));
+                selectedItem = HitTestEntryLayout(e.Graphics, grid, contentViewport, mousePosition);
                 shouldUpdateSelection = false;
-                hasSelectionUpdated = true;
             }
 
-            // 条目网格布局：从左到右、从上到下排列在 contentViewport 内
-            var x = itemPadding;
-            var y = itemPadding;
-            scrollHeight = 0;
+            // 仅遍历可见行；选中条目可能从视口上方展开文字，因此额外保留这一个候选。
+            grid.GetVisibleRange(entrySnapshot.Count, out int firstIndex, out int endIndex);
+            int selectedIndex = isIconManagementMode ? -1 : entrySnapshot.IndexOfPath(selectedItem);
+            bool selectedOutsideRange = selectedIndex >= 0 && (selectedIndex < firstIndex || selectedIndex >= endIndex);
             entryHitBounds.Clear();
             var contentState = e.Graphics.Save();
             e.Graphics.SetClip(
@@ -2796,30 +2833,13 @@ namespace NoFences
             int expandEntryX = 0, expandEntryY = 0;
             FenceEntry expandEntry = null; // 用于在展开区块中重绘图标
 
-            foreach (var file in fenceInfo.Files)
+            for (int cursor = firstIndex; cursor < endIndex + (selectedOutsideRange ? 1 : 0); cursor++)
             {
-                var entry = GetEntry(file);
-                if (entry == null)
-                    continue;
-
-                int drawX = contentViewport.X + x;
-                int drawY = contentViewport.Y + y - scrollOffset;
-
-                // 若首次渲染尚无 entryHitBounds 缓存时发生点击，在此提前命中判定
-                if (!isIconManagementMode && shouldUpdateSelection)
-                {
-                    int textInsetPre = Math.Min(6, Math.Max(1, itemWidth / 6));
-                    var textMaxSizePre = new SizeF(Math.Max(4, itemWidth - textInsetPre * 2), textHeight);
-                    var textSizePre = e.Graphics.MeasureString(entry.Name, iconFont, textMaxSizePre, standardIconTextFormat);
-                    var preRect = new Rectangle(drawX - 2, drawY - 2, itemWidth + 2, iconSize + (int)textSizePre.Height + (itemPadding / 3) + 2);
-                    var mousePos = PointToClient(MousePosition);
-                    if (contentViewport.Contains(mousePos) && preRect.Contains(mousePos))
-                    {
-                        selectedItem = entry.Path;
-                        shouldUpdateSelection = false;
-                        hasSelectionUpdated = true;
-                    }
-                }
+                int entryIndex = cursor < endIndex ? cursor : selectedIndex;
+                FenceEntry entry = entrySnapshot[entryIndex];
+                Rectangle gridBounds = grid.GetItemBounds(entryIndex);
+                int drawX = gridBounds.X;
+                int drawY = gridBounds.Y;
 
                 bool isSelected = !isIconManagementMode && entry.Path == selectedItem;
                 bool needsExpand = false;
@@ -2841,7 +2861,7 @@ namespace NoFences
                 if (needsExpand || cellBounds.IntersectsWith(contentViewport))
                 {
                     Rectangle entryBounds = RenderEntry(
-                        e.Graphics, entry, drawX, drawY, skipText: needsExpand);
+                        e.Graphics, entry, drawX, drawY, mousePosition, contentViewport, skipText: needsExpand);
                     entryHitBounds[entry.Path] = entryBounds;
                 }
 
@@ -2852,27 +2872,12 @@ namespace NoFences
                     expandEntryY = drawY;
                     expandEntry = entry;
                 }
-
-                var itemBottom = y + itemHeight;
-                if (itemBottom > scrollHeight)
-                    scrollHeight = itemBottom;
-
-                int layoutViewportWidth = (isMinified || isAnimatingMinify) && IsVerticalTitleBar
-                    ? Math.Max(contentViewport.Width, prevWidth - titleHeight)
-                    : contentViewport.Width;
-                x += itemWidth + itemPadding;
-                if (x + itemWidth > layoutViewportWidth) // 换行
-                {
-                    x = itemPadding;
-                    y += itemHeight + itemPadding;
-                }
             }
 
             if (isIconManagementMode)
             {
                 // 只绘制可见行后，不能用可见命中缓存清除滚出视口的多选条目。
-                var currentPaths = new HashSet<string>(fenceInfo.Files, StringComparer.OrdinalIgnoreCase);
-                iconManagementSelection.RemoveWhere(path => !currentPaths.Contains(path));
+                iconManagementSelection.RemoveWhere(path => !entrySnapshot.ContainsSourcePath(path));
             }
 
             // 选中条目文字展开渲染：仅当文字超过标准 2 行高度时才进入此分支，高度不限，渲染在最顶层
@@ -2894,8 +2899,7 @@ namespace NoFences
                 var gap = expandTextPadding;
                 var expandOutlineRect = new Rectangle(expandEntryX - 2, expandEntryY - 2,
                     itemWidth + 2, iconSize + (int)drawHeight + gap + 2);
-                var expandMousePos = PointToClient(MousePosition);
-                bool expandMouseOver = expandOutlineRect.Contains(expandMousePos);
+                bool expandMouseOver = contentViewport.Contains(mousePosition) && expandOutlineRect.Contains(mousePosition);
                 entryHitBounds[expandEntry.Path] = expandOutlineRect;
                 if (expandMouseOver)
                 {
@@ -2935,10 +2939,6 @@ namespace NoFences
                     expandMouseOver);
             }
 
-            // 计算内容溢出高度（用于滚动条），确保不会出现负值
-            scrollHeight = Math.Max(0, scrollHeight - contentViewport.Height);
-            scrollOffset = Math.Min(scrollOffset, scrollHeight);
-
             // 滚动条：仅在内容溢出时绘制
             if (scrollHeight > 0)
             {
@@ -2965,7 +2965,7 @@ namespace NoFences
             // 绘制拖拽插入指示线（仅在作为目标分区且 dropIndicatorIndex 有效时绘制）
             if (dropIndicatorIndex >= 0)
             {
-                DrawDropIndicator(e.Graphics, theme, contentViewport);
+                DrawDropIndicator(e.Graphics, theme, contentViewport, grid);
             }
 
             // 恢复内容裁剪，双击打开已在鼠标事件中完成目标解析。
@@ -2995,14 +2995,10 @@ namespace NoFences
                 e.Graphics.DrawPath(borderPen, borderPath);
             }
 
-            if (shouldUpdateSelection && !hasSelectionUpdated)
-                selectedItem = null;
-
             if (!hasHoverUpdated)
                 hoveringItem = null;
 
             shouldUpdateSelection = false;
-            hasSelectionUpdated = false;
             hasHoverUpdated = false;
         }
 
@@ -3164,7 +3160,8 @@ namespace NoFences
         /// 渲染单个栅栏条目（图标 + 文字 + 选中/悬停高亮背景）。
         /// 当 skipText 为 true 时跳过文字绘制（选中条目文字将在循环后单独渲染到最顶层，保证 z-order）。
         /// </summary>
-        private Rectangle RenderEntry(Graphics g, FenceEntry entry, int x, int y, bool skipText = false)
+        private Rectangle RenderEntry(Graphics g, FenceEntry entry, int x, int y,
+            Point mousePosition, Rectangle viewport, bool skipText = false)
         {
             var theme = currentTheme ?? ThemePresets.CreateDefault();
             var icon = entry.ExtractIcon(thumbnailProvider);
@@ -3176,30 +3173,13 @@ namespace NoFences
             var textPosition = new PointF(x + textInset, y + iconSize + textPadding);
             var textMaxSize = new SizeF(Math.Max(4, itemWidth - textInset * 2), textHeight);
 
-            // 按 Windows 桌面规则始终允许自动换行，居中、末尾省略号截断
-            var textSize = g.MeasureString(
-                name,
-                iconFont,
-                textMaxSize,
-                standardIconTextFormat);
-            var gap = textPadding;
-            var outlineRect = new Rectangle(x - 2, y - 2, itemWidth + 2, iconSize + (int)textSize.Height + gap + 2);
-
-            var mousePos = PointToClient(MousePosition);
-            var mouseOver = mousePos.X >= x && mousePos.Y >= y && mousePos.X < x + outlineRect.Width && mousePos.Y < y + outlineRect.Height;
+            var outlineRect = MeasureEntryHitBounds(g, entry, new Rectangle(x, y, itemWidth, itemHeight), false);
+            bool mouseOver = viewport.Contains(mousePosition) && outlineRect.Contains(mousePosition);
 
             if (mouseOver)
             {
                 hoveringItem = entry.Path;
                 hasHoverUpdated = true;
-            }
-
-            // 单击选中（由 Paint 周期统一处理以保证命中测试一致性）
-            if (!isIconManagementMode && mouseOver && shouldUpdateSelection)
-            {
-                selectedItem = entry.Path;
-                shouldUpdateSelection = false;
-                hasSelectionUpdated = true;
             }
 
             // 绘制选中/悬停背景。XP 默认悬浮无反馈，且选中效果由后续的
@@ -4072,7 +4052,7 @@ namespace NoFences
             AppSettingsManager.Instance.SettingsChanged -= AppSettingsManager_SettingsChanged;
             thumbnailProvider.IconThumbnailLoaded -= ThumbnailProvider_IconThumbnailLoaded;
             thumbnailProvider.Dispose();
-            entryCache.Clear();
+            entrySnapshot.Clear();
             iconMetricsPollTimer.Stop();
             iconMetricsPollTimer.Dispose();
             shellContextMenu.MenuClosed -= ShellContextMenu_MenuClosed;
@@ -4629,59 +4609,37 @@ namespace NoFences
             if (fenceInfo?.Files == null || fenceInfo.Files.Count == 0)
                 return 0;
 
-            int count = fenceInfo.Files.Count;
             int managementFooterHeight = isIconManagementMode ? GetIconManagementFooterHeight() : 0;
             Rectangle contentViewport = GetContentViewport(managementFooterHeight);
+            IconGridLayout grid = PrepareIconGridLayout(contentViewport);
+            return entrySnapshot.ToSourceInsertionIndex(grid.FindInsertionIndex(clientPoint, entrySnapshot.Count));
+        }
 
+        /// <summary>同步列表并在布局使用之前校正滚动位置，避免条目减少后的首帧空白。</summary>
+        private IconGridLayout PrepareIconGridLayout(Rectangle contentViewport)
+        {
+            if (entrySnapshot.Synchronize(fenceInfo.Files))
+                entryHitBounds.Clear();
+            IconGridLayout grid = CreateIconGridLayout(contentViewport);
+            scrollHeight = grid.GetScrollHeight(entrySnapshot.Count);
+            int correctedOffset = grid.ClampScrollOffset(entrySnapshot.Count);
+            if (correctedOffset != scrollOffset)
+            {
+                scrollOffset = correctedOffset;
+                entryHitBounds.Clear();
+                grid = CreateIconGridLayout(contentViewport);
+            }
+            return grid;
+        }
+
+        /// <summary>为绘制和拖拽复用同一网格，保留纵向标题栏折叠期间的布局宽度。</summary>
+        private IconGridLayout CreateIconGridLayout(Rectangle contentViewport)
+        {
             int layoutViewportWidth = (isMinified || isAnimatingMinify) && IsVerticalTitleBar
                 ? Math.Max(contentViewport.Width, prevWidth - titleHeight)
                 : contentViewport.Width;
-
-            int x = itemPadding;
-            int y = itemPadding;
-
-            int bestIndex = count;
-            int bestDistSq = int.MaxValue;
-
-            for (int i = 0; i < count; i++)
-            {
-                int drawX = contentViewport.X + x;
-                int drawY = contentViewport.Y + y - scrollOffset;
-                var itemRect = new Rectangle(drawX, drawY, itemWidth, itemHeight);
-
-                // 如果光标在该条目所在的水平行范围内
-                if (clientPoint.Y >= itemRect.Top - itemPadding / 2 &&
-                    clientPoint.Y <= itemRect.Bottom + itemPadding / 2)
-                {
-                    if (clientPoint.X < itemRect.Left + itemRect.Width / 2)
-                        return i;
-                    bestIndex = i + 1;
-                }
-
-                int centerX = itemRect.Left + itemRect.Width / 2;
-                int centerY = itemRect.Top + itemRect.Height / 2;
-                int distSq = (clientPoint.X - centerX) * (clientPoint.X - centerX) +
-                             (clientPoint.Y - centerY) * (clientPoint.Y - centerY);
-                if (distSq < bestDistSq)
-                {
-                    bestDistSq = distSq;
-                    bestIndex = clientPoint.X <= centerX ? i : i + 1;
-                }
-
-                x += itemWidth + itemPadding;
-                if (x + itemWidth > layoutViewportWidth)
-                {
-                    x = itemPadding;
-                    y += itemHeight + itemPadding;
-                }
-            }
-
-            if (clientPoint.Y < contentViewport.Y)
-                return 0;
-            if (clientPoint.Y > contentViewport.Bottom)
-                return count;
-
-            return Math.Max(0, Math.Min(count, bestIndex));
+            return new IconGridLayout(contentViewport, layoutViewportWidth,
+                itemWidth, itemHeight, itemPadding, scrollOffset);
         }
 
         /// <summary>设置本分区在拖拽悬停时的目标插入位置指示线索引。</summary>
@@ -4705,45 +4663,16 @@ namespace NoFences
         }
 
         /// <summary>在图标网格中绘制高亮插入指示线。</summary>
-        private void DrawDropIndicator(Graphics graphics, ThemeDefinition theme, Rectangle contentViewport)
+        private void DrawDropIndicator(Graphics graphics, ThemeDefinition theme, Rectangle contentViewport, IconGridLayout grid)
         {
             if (dropIndicatorIndex < 0 || fenceInfo?.Files == null)
                 return;
 
-            int count = fenceInfo.Files.Count;
-            int index = Math.Max(0, Math.Min(count, dropIndicatorIndex));
-
-            int layoutViewportWidth = (isMinified || isAnimatingMinify) && IsVerticalTitleBar
-                ? Math.Max(contentViewport.Width, prevWidth - titleHeight)
-                : contentViewport.Width;
-
-            int x = itemPadding;
-            int y = itemPadding;
-            int targetX = contentViewport.X + x;
-            int targetY = contentViewport.Y + y - scrollOffset;
-
-            for (int i = 0; i < count; i++)
-            {
-                if (i == index)
-                {
-                    targetX = contentViewport.X + x - itemPadding / 2;
-                    targetY = contentViewport.Y + y - scrollOffset;
-                    break;
-                }
-
-                x += itemWidth + itemPadding;
-                if (x + itemWidth > layoutViewportWidth)
-                {
-                    x = itemPadding;
-                    y += itemHeight + itemPadding;
-                }
-
-                if (i + 1 == index)
-                {
-                    targetX = contentViewport.X + x - itemPadding / 2;
-                    targetY = contentViewport.Y + y - scrollOffset;
-                }
-            }
+            int count = entrySnapshot.Count;
+            int index = entrySnapshot.ToDisplayInsertionIndex(dropIndicatorIndex);
+            Rectangle insertionBounds = grid.GetItemBounds(index);
+            int targetX = insertionBounds.X - (count > 0 ? itemPadding / 2 : 0);
+            int targetY = insertionBounds.Y;
 
             Color accentColor = theme.AccentColor;
             int barWidth = Math.Max(3, LogicalPixelsToDevice(3));
@@ -4772,7 +4701,8 @@ namespace NoFences
             if (!isDraggingItem || string.IsNullOrEmpty(dragCandidatePath))
                 return;
 
-            var entry = GetEntry(dragCandidatePath);
+            int entryIndex = entrySnapshot.IndexOfPath(dragCandidatePath);
+            var entry = entryIndex >= 0 ? entrySnapshot[entryIndex] : null;
             if (entry == null)
                 return;
 
@@ -4815,24 +4745,17 @@ namespace NoFences
         /// <summary>复用路径引用及显示名称，绘制期间不执行文件系统查询。</summary>
         private FenceEntry GetEntry(string path)
         {
-            if (string.IsNullOrWhiteSpace(path))
-                return null;
-            FenceEntry entry;
-            if (!entryCache.TryGetValue(path, out entry))
-            {
-                entry = FenceEntry.FromPath(path);
-                if (entry != null)
-                    entryCache.Add(path, entry);
-            }
-            return entry;
+            if (entrySnapshot.Synchronize(fenceInfo.Files))
+                entryHitBounds.Clear();
+            int index = entrySnapshot.IndexOfPath(path);
+            return index >= 0 ? entrySnapshot[index] : null;
         }
 
-        /// <summary>清理移除或变化条目的模型与图标缓存。</summary>
+        /// <summary>使变化条目的图标失效；只读路径和名称在列表变化时随快照一起更新。</summary>
         private void InvalidateEntry(string path)
         {
             if (path == null)
                 return;
-            entryCache.Remove(path);
             thumbnailProvider.Remove(path);
         }
 

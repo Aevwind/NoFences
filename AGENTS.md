@@ -14,7 +14,7 @@
 - 解决方案平台名称是 `Any CPU`，项目的 Debug/Release `PlatformTarget` 均硬编码为 `x64`。不要直接传入未配置的 `/p:Platform=x64`。
 - 输出为 `NoFences/bin/Release/NoFences.exe`。`msbuild` 不在 PATH 时可查找 Visual Studio 安装目录中的 MSBuild；缺少工具时明确报告未完成构建，不把语法检查当成构建成功。
 - [NoFences.csproj](NoFences/NoFences.csproj) 是传统项目，新增/删除 `.cs` 或资源文件需要同步显式的 `Compile` / `EmbeddedResource` 项。
-- 没有测试项目或测试框架。先构建 Release，再在 Windows PowerShell 5.1 下执行隔离回归脚本：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Verify-Regressions.ps1`。脚本在 `NoFences/obj` 中创建临时数据，不显示窗口或修改桌面文件；桌面交互仍需按受影响功能手工验证。
+- 没有测试项目或测试框架。先构建 Release，再在 Windows PowerShell 5.1 下执行隔离回归脚本：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Verify-Regressions.ps1`。CI 在打包前也执行该脚本。脚本在 `NoFences/obj` 中创建临时数据，不显示窗口或修改桌面文件；桌面交互仍需按受影响功能手工验证。
 
 ## 模块职责
 
@@ -75,11 +75,13 @@
 - 图标单元格内边距保持 `itemWidth * 0.20`，并保留逻辑像素最小值。缩放范围为 10%~200%；设备像素、逻辑像素和比例缩放不要重复叠加。
 - 标准图标文字最多两行；只有真实文字高度**超过两行区域**才展开。一行或刚好两行都不展开。测量完整高度使用 `SizeF(width, 9999)`，有限高度会让 `MeasureString` 截断测量结果。
 - 展开文字使用两遍绘制：第一遍 `RenderEntry(skipText: true)`，循环后绘制展开高亮框 → 重绘图标 → 展开文字。展开条目的悬停和点击命中使用 `expandOutlineRect`，不能沿用标准两行矩形。
-- 单击、鼠标移动、拖拽候选和双击复用 [EntryHitTest](NoFences/Util/EntryHitTest.cs)，先检查内容视口，再优先检查选中项展开矩形。双击在鼠标事件中打开目标，绘制过程中不启动文件。
-- 选择由点击设置 `shouldUpdateSelection` 后在绘制阶段更新；`MouseLeave` 不取消选择。点击其他条目或空白区域改变选择。图标管理模式使用独立多选集合。
+- 鼠标移动、拖拽候选和双击复用 [EntryHitTest](NoFences/Util/EntryHitTest.cs)，先检查内容视口，再优先检查选中项展开矩形。双击在鼠标事件中打开目标，绘制过程中不启动文件。
+- 选择由点击设置 `shouldUpdateSelection` 后，在绘制前通过 `HitTestEntryLayout` 按本帧布局统一解析；不能依赖可能因列表变化或滚动校正失效的上一帧命中缓存。`RenderEntry` 仅绘制，不修改选择；`MouseLeave` 不取消选择。点击其他条目或空白区域改变选择，图标管理模式使用独立多选集合。
+- 每帧读取一次客户区鼠标坐标并传给各条目；标准与展开区域的悬停均按内容视口裁剪，绘制边框与点击复用 `MeasureEntryHitBounds` 的尺寸。
 - 拖动图标超过系统拖拽阈值后进入手动拖拽，支持同分区排序、跨分区移动、拖出移除；`Escape` 取消，拖拽后的点击需抑制。涉及托管条目时必须通过 `FenceManager` 的恢复/重新托管流程。
 - [FenceEntry.Open](NoFences/Model/FenceEntry.cs) 使用不等待的 `Task.Run` 启动目标，避免 UI 线程阻塞。
-- `FenceEntry.FromPath` 只校验路径语法，不在绘制时查询磁盘；缺失或暂时断开的路径继续保留显示。`FenceWindow` 缓存条目并只绘制可见行；多选集合按完整文件列表维护，不能因为条目滚出命中缓存就取消选择。排序先读取一次键值，再进行内存比较。
+- `FenceEntry.FromPath` 只校验路径语法，不在绘制时查询磁盘；缺失或暂时断开的路径继续保留显示。`FenceEntrySnapshot` 缓存可绘制条目及其原始列表索引，列表不变时复用对象；`FenceWindow` 只绘制可见行并在绘制前校正滚动偏移。多选集合按完整文件列表维护，不能因为条目滚出命中缓存就取消选择。排序先读取一次键值，再进行内存比较。
+- 绘制、拖拽落点和插入标记共用 [IconGridLayout](NoFences/Util/IconGridLayout.cs)。列数保持 `max(1, layoutWidth / (itemWidth + itemPadding))`，纵向标题栏折叠时保留展开宽度；不要各自复制换行算法。拖拽仅扫描相邻完整行和末行，距离平方使用 `long`，未填满末行和行边界需通过差分回归。
 - [ThrottledExecution](NoFences/Util/ThrottledExecution.cs) 是 **UI 线程的可取消防抖器**：WinForms `Timer` 每次 `Run` 重新计时，4 秒静默后保存最后一次操作；关闭时 `Flush` 或 `Cancel`，随后释放。它没有旧版 `volatile isAwaiting`，也不是跨线程调度工具。
 - `ScheduleBoundsSave` 在排队和执行时均检查自动保存开关，关闭开关时取消待处理操作；仅限制布局延迟保存，文件添加、排序、移除与快捷方式事务仍必须持久化。
 - [ThumbnailProvider](NoFences/Util/ThumbnailProvider.cs) 立即返回独占的通用占位图标，图片缩略图和真实 Shell 图标均在后台生成，`SemaphoreSlim(4)` 限制并发。解码失败回退关联图标。`TargetSize` 为设备像素，提交缩放时直接比较并同步提供器目标尺寸，不能只比较预览前后的布局尺寸。

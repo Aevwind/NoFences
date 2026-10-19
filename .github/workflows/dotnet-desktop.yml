@@ -255,6 +255,10 @@ jobs:
             throw "Fence context menu is missing its independent dark-mode switch."
           }
 
+      - name: Verify isolated regressions
+        shell: powershell
+        run: .\tools\Verify-Regressions.ps1
+
       # Stage one clean directory for both packages. This preserves config and
       # satellite resource files while excluding debug-only PDB files.
       - name: Create installer and portable package
