@@ -118,22 +118,12 @@ namespace NoFences.Win32
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref ICONMETRICS pvParam, uint fWinIni);
 
-        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
-        public static extern IntPtr CreateFontIndirect(ref LOGFONT lf);
-
         [DllImport("gdi32.dll")]
         public static extern bool DeleteObject(IntPtr hObject);
 
         [DllImport("user32.dll")]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X,
            int Y, int cx, int cy, uint uFlags);
-        [DllImport("user32.dll")]
-        public static extern IntPtr DeferWindowPos(IntPtr hWinPosInfo, IntPtr hWnd,
-           IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
-        [DllImport("user32.dll")]
-        public static extern IntPtr BeginDeferWindowPos(int nNumWindows);
-        [DllImport("user32.dll")]
-        public static extern bool EndDeferWindowPos(IntPtr hWinPosInfo);
 
         [DllImport("user32.dll")]
         public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);

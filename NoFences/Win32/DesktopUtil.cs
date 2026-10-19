@@ -13,10 +13,7 @@ namespace NoFences.Win32
     /// </summary>
     public class DesktopUtil
     {
-        private const Int32 GWL_STYLE = -16;
         private const Int32 GWL_HWNDPARENT = -8;
-        private const Int32 WS_MAXIMIZEBOX = 0x00010000;
-        private const Int32 WS_MINIMIZEBOX = 0x00020000;
         private const int SWC_DESKTOP = 8;
         private const int SWFO_NEEDDISPATCH = 1;
         private const int QUERY_SERVICE_VTABLE_INDEX = 3;
@@ -122,9 +119,6 @@ namespace NoFences.Win32
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string className, string windowTitle);
-
-        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-        static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
 
         [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
         private static extern int StrRetToBufW(
@@ -596,19 +590,6 @@ namespace NoFences.Win32
             catch (COMException)
             {
             }
-        }
-
-        /// <summary>
-        /// 移除窗口的最小化和最大化按钮样式位，
-        /// 防止栅栏窗口被意外最小化。
-        /// </summary>
-        public static void PreventMinimize(IntPtr handle)
-        {
-            long windowStyle = WindowUtil.GetWindowLong(handle, GWL_STYLE).ToInt64();
-            WindowUtil.SetWindowLong(
-                handle,
-                GWL_STYLE,
-                new IntPtr(windowStyle & ~WS_MAXIMIZEBOX & ~WS_MINIMIZEBOX));
         }
 
         /// <summary>

@@ -1,43 +1,44 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using System;
-using System.IO;
 using NoFences.Util;
 
 namespace NoFences.Model
 {
     /// <summary>
     /// 表示栅栏中的一个条目（文件或文件夹）。
-    /// 负责提取图标和打开目标路径。
+    /// 保存路径引用、提取图标和打开目标；构造时不查询磁盘，允许保留暂时不可访问的引用。
     /// </summary>
     public class FenceEntry
     {
         /// <summary>文件或文件夹的完整路径</summary>
         public string Path { get; }
 
-        /// <summary>条目类型（文件/文件夹）</summary>
-        public EntryType Type { get; }
-
         /// <summary>显示名称（不含扩展名）</summary>
-        public string Name => System.IO.Path.GetFileNameWithoutExtension(Path);
+        public string Name { get; }
 
-        private FenceEntry(string path, EntryType type)
+        private FenceEntry(string path)
         {
             Path = path;
-            Type = type;
+            Name = System.IO.Path.GetFileNameWithoutExtension(path.TrimEnd('\\', '/'));
         }
 
         /// <summary>
-        /// 根据路径创建条目实例。自动检测是文件还是文件夹。
+        /// 根据有效路径创建引用，不在 UI 绘制期间执行文件或目录存在性查询。
         /// </summary>
         public static FenceEntry FromPath(string path)
         {
-            if (File.Exists(path))
-                return new FenceEntry(path, EntryType.File);
-            else if (Directory.Exists(path))
-                return new FenceEntry(path, EntryType.Folder);
-            else return null;
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+            try
+            {
+                System.IO.Path.GetFullPath(path);
+                return new FenceEntry(path);
+            }
+            catch (ArgumentException) { return null; }
+            catch (NotSupportedException) { return null; }
+            catch (System.IO.PathTooLongException) { return null; }
         }
 
         /// <summary>
@@ -59,14 +60,11 @@ namespace NoFences.Model
             {
                 try
                 {
-                    if (Type == EntryType.File)
-                        Process.Start(Path);          // 使用默认程序打开文件
-                    else if (Type == EntryType.Folder)
-                        Process.Start("explorer.exe", Path); // 在资源管理器中打开文件夹
+                    Process.Start(new ProcessStartInfo(Path) { UseShellExecute = true });
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine($"Failed to start: {e}");
+                    Trace.WriteLine($"Failed to start: {e}");
                 }
             });
         }

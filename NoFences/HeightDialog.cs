@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -26,7 +25,6 @@ namespace NoFences
         public const int MinTitleFontSize = 10;
         public const int MaxTitleFontSize = 40;
 
-        public const int DefaultTitleHeight = 26;
         public const int MinTitleHeight = 20;
         public const int MaxTitleHeight = 100;
 
@@ -1080,12 +1078,6 @@ namespace NoFences
             return safeFontSize + padY * 2;
         }
 
-        /// <summary>向后兼容保留的最小标题栏高度计算方法。</summary>
-        public static int CalculateMinTitleHeight(FenceTitlePosition position, int padX, int padY)
-        {
-            return CalculateAdaptedTitleHeight(position, DefaultTitleFontSize, padX, padY);
-        }
-
         private void UpdateAdaptedTitleHeight()
         {
             selectedHeight = CalculateAdaptedTitleHeight(selectedPosition, selectedFontSize, selectedPaddingX, selectedPaddingY);
@@ -1103,15 +1095,6 @@ namespace NoFences
                 return MinTitleFontSize;
             if (value > MaxTitleFontSize)
                 return MaxTitleFontSize;
-            return value;
-        }
-
-        public static int ClampHeight(int value)
-        {
-            if (value < MinTitleHeight)
-                return MinTitleHeight;
-            if (value > MaxTitleHeight)
-                return MaxTitleHeight;
             return value;
         }
 

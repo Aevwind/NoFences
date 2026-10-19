@@ -1,13 +1,12 @@
 using Microsoft.Win32;
 using NoFences.Localization;
 using NoFences.Theming;
+using NoFences.Util;
 using System;
 using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
-using System.Xml;
-using System.Xml.Serialization;
 
 namespace NoFences.Model
 {
@@ -30,7 +29,7 @@ namespace NoFences.Model
         public string Language { get; set; } = "zh-CN";
 
         /// <summary>是否定期检查新版本。</summary>
-        public bool CheckForUpdates { get; set; } = true;
+        public bool CheckForUpdates { get; set; }
 
         /// <summary>应用数据存储目录路径。</summary>
         public string DataStoragePath { get; set; } = AppSettingsManager.GetDefaultDataDirectory();
@@ -67,10 +66,9 @@ namespace NoFences.Model
         {
             SchemaVersion = CurrentSchemaVersion;
             Language = NormalizeLanguage(Language);
-            if (string.IsNullOrWhiteSpace(DataStoragePath))
-                DataStoragePath = AppSettingsManager.GetDefaultDataDirectory();
-            else
-                DataStoragePath = DataStoragePath.Trim();
+            // 保留旧 XML 属性，但只显示当前实际使用的目录；目录迁移和更新服务尚未实现。
+            DataStoragePath = AppSettingsManager.GetDefaultDataDirectory();
+            CheckForUpdates = false;
         }
 
         /// <summary>判断两份基础配置在业务语义上是否完全一致。</summary>
@@ -231,30 +229,9 @@ namespace NoFences.Model
                 return;
 
             snapshot.AutoSnap = enabled;
-            try
-            {
-                lock (syncRoot)
-                {
-                    SaveSettingsFile(bootstrapSettingsPath, snapshot);
-                    string targetSettingsPath = Path.Combine(snapshot.DataStoragePath, SettingsFileName);
-                    if (!string.Equals(bootstrapSettingsPath, targetSettingsPath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        SaveSettingsFile(targetSettingsPath, snapshot);
-                    }
-
-                    settings = snapshot.Clone();
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Trace.WriteLine("SetAutoSnap persistence failed: " + ex);
-                lock (syncRoot)
-                {
-                    settings.AutoSnap = enabled;
-                }
-            }
-
-            SettingsChanged?.Invoke(this, EventArgs.Empty);
+            string error;
+            if (!TrySaveAndApply(snapshot, out error))
+                throw new IOException(error);
         }
 
         /// <summary>获取当前生效的数据保存目录。</summary>
@@ -324,47 +301,43 @@ namespace NoFences.Model
             if (!ValidateDataStoragePath(prepared.DataStoragePath, out errorMessage))
                 return false;
 
-            try
+            lock (syncRoot)
             {
-                string fullTargetDir = Path.GetFullPath(prepared.DataStoragePath);
-                Directory.CreateDirectory(fullTargetDir);
-                VerifyDirectoryWritable(fullTargetDir);
-                prepared.DataStoragePath = fullTargetDir;
-            }
-            catch (Exception ex)
-            {
-                errorMessage = ThemeText.Key(LKeys.ErrDataDirNotWritablePrefix) + ex.Message;
-                return false;
-            }
-
-            try
-            {
-                SetStartupRegistry(prepared.LaunchAtStartup);
-            }
-            catch (Exception ex)
-            {
-                errorMessage = ThemeText.Key(LKeys.ErrStartupRegistryPrefix) + ex.Message;
-                return false;
-            }
-
-            try
-            {
-                lock (syncRoot)
+                object previousStartupValue = null;
+                RegistryValueKind previousStartupKind = RegistryValueKind.String;
+                bool registryTouched = false;
+                try
                 {
-                    SaveSettingsFile(bootstrapSettingsPath, prepared);
-                    string targetSettingsPath = Path.Combine(prepared.DataStoragePath, SettingsFileName);
-                    if (!string.Equals(bootstrapSettingsPath, targetSettingsPath, StringComparison.OrdinalIgnoreCase))
+                    if (prepared.LaunchAtStartup != settings.LaunchAtStartup)
                     {
-                        SaveSettingsFile(targetSettingsPath, prepared);
+                        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(StartupRunRegistryPath, false))
+                        {
+                            previousStartupValue = key?.GetValue(
+                                StartupRegistryValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                            if (previousStartupValue != null)
+                                previousStartupKind = key.GetValueKind(StartupRegistryValueName);
+                        }
+                        registryTouched = true;
+                        SetStartupRegistry(prepared.LaunchAtStartup);
                     }
 
+                    SaveSettingsFile(bootstrapSettingsPath, prepared);
                     settings = prepared.Clone();
                 }
-            }
-            catch (Exception ex)
-            {
-                errorMessage = ThemeText.Key(LKeys.ErrSaveConfigPrefix) + ex.Message;
-                return false;
+                catch (Exception ex)
+                {
+                    errorMessage = ThemeText.Key(LKeys.ErrSaveConfigPrefix) + ex.Message;
+                    if (registryTouched)
+                    {
+                        try { WriteStartupRegistryValue(previousStartupValue, previousStartupKind); }
+                        catch (Exception rollbackError)
+                        {
+                            errorMessage += Environment.NewLine +
+                                ThemeText.Key(LKeys.ErrStartupRegistryPrefix) + rollbackError.Message;
+                        }
+                    }
+                    return false;
+                }
             }
 
             ApplyCultureAndLanguage(prepared.Language);
@@ -375,48 +348,25 @@ namespace NoFences.Model
 
         private AppSettings LoadSettings()
         {
-            try
+            foreach (string path in new[] { bootstrapSettingsPath, bootstrapSettingsPath + ".bak" })
             {
-                if (!File.Exists(bootstrapSettingsPath))
+                if (!File.Exists(path))
+                    continue;
+                try
                 {
-                    var initial = new AppSettings
-                    {
-                        LaunchAtStartup = IsStartupRegistryEnabled(),
-                        Language = AppSettings.DetectSystemLanguage(),
-                        CheckForUpdates = true,
-                        DataStoragePath = GetDefaultDataDirectory(),
-                        AutoSave = true
-                    };
-                    initial.Normalize();
-                    return initial;
-                }
-
-                var fileInfo = new FileInfo(bootstrapSettingsPath);
-                if (fileInfo.Length <= 0 || fileInfo.Length > MaximumSettingsBytes)
-                    return CreateFallbackSettings();
-
-                var serializer = new XmlSerializer(typeof(AppSettings));
-                var readerSettings = new XmlReaderSettings
-                {
-                    DtdProcessing = DtdProcessing.Prohibit,
-                    XmlResolver = null
-                };
-                using (var stream = File.OpenRead(bootstrapSettingsPath))
-                using (var reader = XmlReader.Create(stream, readerSettings))
-                {
-                    var loaded = serializer.Deserialize(reader) as AppSettings;
+                    var loaded = XmlFileStore.Deserialize<AppSettings>(
+                        XmlFileStore.ReadText(path, MaximumSettingsBytes), MaximumSettingsBytes);
                     if (loaded == null)
-                        return CreateFallbackSettings();
-
+                        continue;
                     loaded.Normalize();
                     return loaded;
                 }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Trace.WriteLine("AppSettings load failed: " + ex);
+                }
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Trace.WriteLine("AppSettings load failed: " + ex);
-                return CreateFallbackSettings();
-            }
+            return CreateFallbackSettings();
         }
 
         private static AppSettings CreateFallbackSettings()
@@ -425,7 +375,7 @@ namespace NoFences.Model
             {
                 LaunchAtStartup = IsStartupRegistryEnabled(),
                 Language = AppSettings.DetectSystemLanguage(),
-                CheckForUpdates = true,
+                CheckForUpdates = false,
                 DataStoragePath = GetDefaultDataDirectory(),
                 AutoSave = true
             };
@@ -435,31 +385,7 @@ namespace NoFences.Model
 
         private static void SaveSettingsFile(string filePath, AppSettings value)
         {
-            string directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
-
-            string tempPath = filePath + ".tmp";
-            var serializer = new XmlSerializer(typeof(AppSettings));
-            using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                serializer.Serialize(stream, value);
-                stream.Flush(true);
-            }
-
-            if (File.Exists(filePath))
-            {
-                File.Delete(filePath);
-            }
-            File.Move(tempPath, filePath);
-        }
-
-        private static void VerifyDirectoryWritable(string directoryPath)
-        {
-            string probeFile = Path.Combine(directoryPath, ".nofences_write_test_" + Guid.NewGuid().ToString("N"));
-            using (File.Create(probeFile, 1, FileOptions.DeleteOnClose))
-            {
-            }
+            XmlFileStore.Save(filePath, value, MaximumSettingsBytes);
         }
 
         private static bool IsStartupRegistryEnabled()
@@ -482,22 +408,24 @@ namespace NoFences.Model
 
         private static void SetStartupRegistry(bool enabled)
         {
+            WriteStartupRegistryValue(
+                enabled ? "\"" + Application.ExecutablePath + "\"" : null,
+                RegistryValueKind.String);
+        }
+
+        /// <summary>写入自启动值或恢复其原始内容和类型，空值表示移除当前应用的注册项。</summary>
+        private static void WriteStartupRegistryValue(object value, RegistryValueKind kind)
+        {
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(StartupRunRegistryPath, true) ??
                                      Registry.CurrentUser.CreateSubKey(StartupRunRegistryPath))
             {
                 if (key == null)
                     throw new InvalidOperationException("Cannot open HKCU Run registry key.");
 
-                if (enabled)
-                {
-                    string exePath = Application.ExecutablePath;
-                    key.SetValue(StartupRegistryValueName, "\"" + exePath + "\"", RegistryValueKind.String);
-                }
+                if (value != null)
+                    key.SetValue(StartupRegistryValueName, value, kind);
                 else
-                {
-                    if (key.GetValue(StartupRegistryValueName) != null)
-                        key.DeleteValue(StartupRegistryValueName, false);
-                }
+                    key.DeleteValue(StartupRegistryValueName, false);
             }
         }
 

@@ -1,9 +1,9 @@
 using NoFences.Win32;
+using NoFences.Util;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Xml.Serialization;
 
 namespace NoFences.Theming
 {
@@ -54,6 +54,7 @@ namespace NoFences.Theming
     public sealed class ThemeManager
     {
         private const string SettingsFileName = "__theme_settings.xml";
+        private const long MaximumSettingsBytes = 1024 * 1024;
         private readonly object syncRoot = new object();
         private readonly Dictionary<string, IThemeProvider> providers =
             new Dictionary<string, IThemeProvider>(StringComparer.OrdinalIgnoreCase);
@@ -223,9 +224,7 @@ namespace NoFences.Theming
         }
 
         /// <summary>
-        /// Atomically saves the selected style, independent color mode, and both
-        /// custom variants. Saving both custom variants even when a preset is active
-        /// preserves edits when the user later switches back to Custom.
+        /// 先持久化主题草稿，再替换生效快照；写盘失败时保留原主题并将错误交给调用方。
         /// </summary>
         public void ApplySelection(
             string themeId,
@@ -238,22 +237,23 @@ namespace NoFences.Theming
                 if (!IsKnownThemeInternal(themeId))
                     themeId = ThemeIds.Default;
 
+                ThemeSettings prepared = CloneSettings();
                 if (customLightTheme != null)
-                    settings.CustomTheme = PrepareCustomTheme(customLightTheme);
+                    prepared.CustomTheme = PrepareCustomTheme(customLightTheme);
                 if (customDarkTheme != null)
-                    settings.CustomDarkTheme = PrepareCustomTheme(customDarkTheme);
+                    prepared.CustomDarkTheme = PrepareCustomTheme(customDarkTheme);
 
-                settings.SelectedThemeId = themeId;
-                settings.DarkModeEnabled = darkModeEnabled;
-                SaveSettings(settings);
+                prepared.SelectedThemeId = themeId;
+                prepared.DarkModeEnabled = darkModeEnabled;
+                SaveSettings(prepared);
+                settings = prepared;
             }
 
             NotifyThemeChanged(darkModeEnabled);
         }
 
         /// <summary>
-        /// Changes only the global color mode. This is used by the right-click menu
-        /// switch and intentionally leaves the selected visual style untouched.
+        /// 仅切换全局明暗模式，写盘成功后才更新当前会话和原生菜单。
         /// </summary>
         public void SetDarkMode(bool enabled)
         {
@@ -262,8 +262,10 @@ namespace NoFences.Theming
                 if (settings.DarkModeEnabled == enabled)
                     return;
 
-                settings.DarkModeEnabled = enabled;
-                SaveSettings(settings);
+                ThemeSettings prepared = CloneSettings();
+                prepared.DarkModeEnabled = enabled;
+                SaveSettings(prepared);
+                settings = prepared;
             }
 
             NotifyThemeChanged(enabled);
@@ -273,6 +275,19 @@ namespace NoFences.Theming
         {
             WindowUtil.TrySetPreferredAppMode(darkModeEnabled);
             ThemeChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>复制当前主题设置，避免写盘失败时污染正在使用的对象。</summary>
+        private ThemeSettings CloneSettings()
+        {
+            return new ThemeSettings
+            {
+                ThemeSchemaVersion = settings.ThemeSchemaVersion,
+                SelectedThemeId = settings.SelectedThemeId,
+                DarkModeEnabled = settings.DarkModeEnabled,
+                CustomTheme = settings.CustomTheme.Clone(),
+                CustomDarkTheme = settings.CustomDarkTheme.Clone()
+            };
         }
 
         private static ThemeColorMode ToColorMode(bool darkModeEnabled)
@@ -331,150 +346,110 @@ namespace NoFences.Theming
             return result;
         }
 
+        /// <summary>安全加载主配置或最近备份，并保留旧版主题标识和明暗模式迁移。</summary>
         private ThemeSettings LoadSettings()
         {
-            try
+            foreach (string path in new[] { settingsPath, settingsPath + ".bak" })
             {
-                if (!File.Exists(settingsPath))
-                    return new ThemeSettings();
-
-                // Reading the XML text first lets us distinguish a genuinely saved
-                // false value from a legacy file that predates DarkModeEnabled.
-                string serializedSettings = File.ReadAllText(settingsPath);
-                bool hasIndependentColorMode = serializedSettings.IndexOf(
-                    "<DarkModeEnabled>",
-                    StringComparison.OrdinalIgnoreCase) >= 0;
-                bool hasThemeSchemaVersion = serializedSettings.IndexOf(
-                    "<ThemeSchemaVersion>",
-                    StringComparison.OrdinalIgnoreCase) >= 0;
-
-                var serializer = new XmlSerializer(typeof(ThemeSettings));
-                ThemeSettings loaded;
-                using (var reader = new StringReader(serializedSettings))
-                    loaded = serializer.Deserialize(reader) as ThemeSettings;
-
-                if (loaded == null)
-                    return new ThemeSettings();
-
-                if (loaded.CustomTheme == null)
-                    loaded.CustomTheme = ThemePresets.CreateDefaultCustom(ThemeColorMode.Light);
-
-                if (!hasIndependentColorMode)
+                if (!File.Exists(path))
+                    continue;
+                try
                 {
-                    // Version 1 stored one mostly-dark custom palette because its
-                    // Windows 11 preset implicitly meant dark. Preserve that palette
-                    // as the new dark custom variant and create a true light variant.
-                    bool legacyCustomWasDark =
-                        ThemeDrawing.IsDark(loaded.CustomTheme.DialogBackgroundColor);
-                    if (legacyCustomWasDark)
-                    {
-                        loaded.CustomDarkTheme = loaded.CustomTheme.Clone();
+                    // Reading the XML text first lets us distinguish a genuinely saved
+                    // false value from a legacy file that predates DarkModeEnabled.
+                    string serializedSettings = XmlFileStore.ReadText(path, MaximumSettingsBytes);
+                    bool hasIndependentColorMode = serializedSettings.IndexOf(
+                        "<DarkModeEnabled>",
+                        StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool hasThemeSchemaVersion = serializedSettings.IndexOf(
+                        "<ThemeSchemaVersion>",
+                        StringComparison.OrdinalIgnoreCase) >= 0;
+
+                    ThemeSettings loaded = XmlFileStore.Deserialize<ThemeSettings>(
+                        serializedSettings, MaximumSettingsBytes);
+
+                    if (loaded == null)
+                        continue;
+
+                    if (loaded.CustomTheme == null)
                         loaded.CustomTheme = ThemePresets.CreateDefaultCustom(ThemeColorMode.Light);
+
+                    if (!hasIndependentColorMode)
+                    {
+                        // Version 1 stored one mostly-dark custom palette because its
+                        // Windows 11 preset implicitly meant dark. Preserve that palette
+                        // as the new dark custom variant and create a true light variant.
+                        bool legacyCustomWasDark =
+                            ThemeDrawing.IsDark(loaded.CustomTheme.DialogBackgroundColor);
+                        if (legacyCustomWasDark)
+                        {
+                            loaded.CustomDarkTheme = loaded.CustomTheme.Clone();
+                            loaded.CustomTheme = ThemePresets.CreateDefaultCustom(ThemeColorMode.Light);
+                        }
+                        else
+                        {
+                            loaded.CustomDarkTheme =
+                                ThemePresets.CreateDefaultCustom(ThemeColorMode.Dark);
+                        }
+
+                        // 第一版主题功能曾把程序最初的半透明外观误命名为
+                        // Windows 11。迁移时改用新的“默认”标识，既保持用户看到的
+                        // 原始外观，又让真正的 Win11 风格继续独立于黑暗模式。
+                        if (string.Equals(
+                            loaded.SelectedThemeId,
+                            ThemeIds.Windows11,
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            loaded.SelectedThemeId = ThemeIds.Default;
+                            loaded.DarkModeEnabled = false;
+                        }
+                        else
+                        {
+                            loaded.DarkModeEnabled =
+                                string.Equals(
+                                    loaded.SelectedThemeId,
+                                    ThemeIds.Custom,
+                                    StringComparison.OrdinalIgnoreCase) && legacyCustomWasDark;
+                        }
                     }
-                    else
+                    else if (loaded.CustomDarkTheme == null)
                     {
                         loaded.CustomDarkTheme =
                             ThemePresets.CreateDefaultCustom(ThemeColorMode.Dark);
                     }
 
-                    // 第一版主题功能曾把程序最初的半透明外观误命名为
-                    // Windows 11。迁移时改用新的“默认”标识，既保持用户看到的
-                    // 原始外观，又让真正的 Win11 风格继续独立于黑暗模式。
-                    if (string.Equals(
-                        loaded.SelectedThemeId,
-                        ThemeIds.Windows11,
-                        StringComparison.OrdinalIgnoreCase))
+                    // 加入“默认”主题之前，Windows 11 同时承担隐式默认值。只对没有
+                    // 新版本标记的旧配置执行一次迁移；迁移后用户若主动选回 Win11，
+                    // 保存的版本标记会确保后续启动尊重该选择。XP 和自定义不受影响。
+                    if ((!hasThemeSchemaVersion ||
+                         loaded.ThemeSchemaVersion < ThemeSettings.CurrentSchemaVersion) &&
+                        string.Equals(
+                            loaded.SelectedThemeId,
+                            ThemeIds.Windows11,
+                            StringComparison.OrdinalIgnoreCase))
                     {
                         loaded.SelectedThemeId = ThemeIds.Default;
-                        loaded.DarkModeEnabled = false;
                     }
-                    else
-                    {
-                        loaded.DarkModeEnabled =
-                            string.Equals(
-                                loaded.SelectedThemeId,
-                                ThemeIds.Custom,
-                                StringComparison.OrdinalIgnoreCase) && legacyCustomWasDark;
-                    }
-                }
-                else if (loaded.CustomDarkTheme == null)
-                {
-                    loaded.CustomDarkTheme =
-                        ThemePresets.CreateDefaultCustom(ThemeColorMode.Dark);
-                }
+                    loaded.ThemeSchemaVersion = ThemeSettings.CurrentSchemaVersion;
 
-                // 加入“默认”主题之前，Windows 11 同时承担隐式默认值。只对没有
-                // 新版本标记的旧配置执行一次迁移；迁移后用户若主动选回 Win11，
-                // 保存的版本标记会确保后续启动尊重该选择。XP 和自定义不受影响。
-                if ((!hasThemeSchemaVersion ||
-                     loaded.ThemeSchemaVersion < ThemeSettings.CurrentSchemaVersion) &&
-                    string.Equals(
-                        loaded.SelectedThemeId,
-                        ThemeIds.Windows11,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    loaded.SelectedThemeId = ThemeIds.Default;
+                    loaded.CustomTheme = PrepareCustomTheme(loaded.CustomTheme);
+                    loaded.CustomDarkTheme = PrepareCustomTheme(loaded.CustomDarkTheme);
+                    if (!IsKnownThemeInternal(loaded.SelectedThemeId))
+                        loaded.SelectedThemeId = ThemeIds.Default;
+                    return loaded;
                 }
-                loaded.ThemeSchemaVersion = ThemeSettings.CurrentSchemaVersion;
-
-                loaded.CustomTheme = PrepareCustomTheme(loaded.CustomTheme);
-                loaded.CustomDarkTheme = PrepareCustomTheme(loaded.CustomDarkTheme);
-                if (!IsKnownThemeInternal(loaded.SelectedThemeId))
-                    loaded.SelectedThemeId = ThemeIds.Default;
-                return loaded;
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Trace.WriteLine("Theme settings load failed: " + ex);
+                }
             }
-            catch
-            {
-                // A malformed or inaccessible optional settings file must never
-                // prevent fences from loading. Defaults remain usable and the old
-                // file is left untouched until the user explicitly applies a theme.
-                return new ThemeSettings();
-            }
+            return new ThemeSettings();
         }
 
+        /// <summary>原子持久化主题设置，失败时保留原文件并向调用方报告异常。</summary>
         private void SaveSettings(ThemeSettings value)
         {
-            string temporaryPath = settingsPath + ".tmp";
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(settingsPath));
-                var serializer = new XmlSerializer(typeof(ThemeSettings));
-                using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                    serializer.Serialize(stream, value);
-
-                if (File.Exists(settingsPath))
-                {
-                    try
-                    {
-                        File.Replace(temporaryPath, settingsPath, null);
-                    }
-                    catch
-                    {
-                        // File.Replace is not supported by every filesystem. Copying
-                        // the fully-written temporary file is the compatible fallback.
-                        File.Copy(temporaryPath, settingsPath, true);
-                        File.Delete(temporaryPath);
-                    }
-                }
-                else
-                {
-                    File.Move(temporaryPath, settingsPath);
-                }
-            }
-            catch
-            {
-                // Applying a theme is still useful for the current session when
-                // LocalAppData is read-only. Persistence failure is deliberately
-                // non-fatal, matching the application's lightweight startup model.
-                try
-                {
-                    if (File.Exists(temporaryPath))
-                        File.Delete(temporaryPath);
-                }
-                catch
-                {
-                }
-            }
+            XmlFileStore.Save(settingsPath, value, MaximumSettingsBytes);
         }
     }
 }

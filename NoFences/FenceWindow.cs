@@ -18,7 +18,6 @@ namespace NoFences
     {
         private int logicalTitleHeight;
         private int titleHeight;
-        private const int titleOffset = 3;
 
         // 图标与文字布局尺寸（根据桌面图标大小动态计算）
         private int iconSize;        // 图标边长（设备像素，直接用于 GDI+ 绘制）
@@ -47,7 +46,6 @@ namespace NoFences
         private string selectedItem;
         private string hoveringItem;
         private bool shouldUpdateSelection;
-        private bool shouldRunDoubleClick;
         private bool hasSelectionUpdated;
         private bool hasHoverUpdated;
         private bool isMinified;
@@ -99,6 +97,8 @@ namespace NoFences
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Rectangle> entryHitBounds =
             new Dictionary<string, Rectangle>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, FenceEntry> entryCache =
+            new Dictionary<string, FenceEntry>(StringComparer.OrdinalIgnoreCase);
         private Rectangle iconManagementConfirmBounds;
         private Rectangle iconManagementCancelBounds;
         private int iconManagementHoverTarget;
@@ -553,10 +553,9 @@ namespace NoFences
         private void ApplyIconMetrics()
         {
             titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
-            var prevIconSize = iconSize;
             LoadAndApplyMetrics();
 
-            if (thumbnailProvider != null && iconSize != prevIconSize)
+            if (thumbnailProvider != null && thumbnailProvider.TargetSize != iconSize)
                 thumbnailProvider.TargetSize = iconSize;
 
             // 系统设置消息也可能只改变字体，因此每次应用度量都重建字体并重绘
@@ -768,7 +767,7 @@ namespace NoFences
             logicalTitleHeight = adaptedHeight;
             fenceInfo.TitleHeight = logicalTitleHeight;
             titleHeight = LogicalPixelsToDevice(logicalTitleHeight);
-            
+
             this.MouseWheel += FenceWindow_MouseWheel;
             thumbnailProvider.IconThumbnailLoaded += ThumbnailProvider_IconThumbnailLoaded;
             InitializeManagedItemsWatcher();
@@ -859,10 +858,10 @@ namespace NoFences
             sortByCreatedToolStripMenuItem = new ToolStripMenuItem();
 
             sortByNameToolStripMenuItem.Click += (s, e) => ApplySort(CompareByName);
-            sortBySizeToolStripMenuItem.Click += (s, e) => ApplySort(CompareBySize);
-            sortByTypeToolStripMenuItem.Click += (s, e) => ApplySort(CompareByType);
-            sortByModifiedToolStripMenuItem.Click += (s, e) => ApplySort(CompareByModified);
-            sortByCreatedToolStripMenuItem.Click += (s, e) => ApplySort(CompareByCreated);
+            sortBySizeToolStripMenuItem.Click += (s, e) => ApplySortByKey(GetItemSize, (a, b) => b.CompareTo(a));
+            sortByTypeToolStripMenuItem.Click += (s, e) => ApplySortByKey(GetItemTypeKey, StringComparer.CurrentCultureIgnoreCase.Compare);
+            sortByModifiedToolStripMenuItem.Click += (s, e) => ApplySortByKey(GetItemModifiedTime, (a, b) => b.CompareTo(a));
+            sortByCreatedToolStripMenuItem.Click += (s, e) => ApplySortByKey(GetItemCreationTime, (a, b) => b.CompareTo(a));
 
             sortToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[]
             {
@@ -902,6 +901,28 @@ namespace NoFences
             }
         }
 
+        /// <summary>先读取一次各路径的排序键，再进行纯内存比较，避免比较器反复访问磁盘。</summary>
+        private void ApplySortByKey<T>(Func<string, T> getKey, Comparison<T> compare)
+        {
+            if (fenceInfo.Files == null || fenceInfo.Files.Count < 2)
+                return;
+            var keys = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+            foreach (string path in fenceInfo.Files)
+            {
+                if (path != null && !keys.ContainsKey(path))
+                    keys.Add(path, getKey(path));
+            }
+            ApplySort((a, b) =>
+            {
+                T left;
+                T right;
+                int result = a != null && b != null && keys.TryGetValue(a, out left) && keys.TryGetValue(b, out right)
+                    ? compare(left, right) : 0;
+                return result != 0 ? result : CompareByName(a, b);
+            });
+        }
+
+        /// <summary>按资源管理器的自然名称规则排序，名称相同时以路径保持确定顺序。</summary>
         private static int CompareByName(string a, string b)
         {
             string nameA = Path.GetFileNameWithoutExtension(a) ?? "";
@@ -925,15 +946,6 @@ namespace NoFences
             }
         }
 
-        private static int CompareBySize(string a, string b)
-        {
-            long sizeA = GetItemSize(a);
-            long sizeB = GetItemSize(b);
-            int cmp = sizeB.CompareTo(sizeA); // 降序：大文件在前
-            if (cmp != 0) return cmp;
-            return CompareByName(a, b);
-        }
-
         private static string GetItemTypeKey(string path)
         {
             try
@@ -949,15 +961,6 @@ namespace NoFences
             }
         }
 
-        private static int CompareByType(string a, string b)
-        {
-            string typeA = GetItemTypeKey(a);
-            string typeB = GetItemTypeKey(b);
-            int cmp = string.Compare(typeA, typeB, StringComparison.CurrentCultureIgnoreCase);
-            if (cmp != 0) return cmp;
-            return CompareByName(a, b);
-        }
-
         private static DateTime GetItemModifiedTime(string path)
         {
             try
@@ -969,15 +972,6 @@ namespace NoFences
             }
             catch { }
             return DateTime.MinValue;
-        }
-
-        private static int CompareByModified(string a, string b)
-        {
-            DateTime timeA = GetItemModifiedTime(a);
-            DateTime timeB = GetItemModifiedTime(b);
-            int cmp = timeB.CompareTo(timeA); // 降序：最近修改在前
-            if (cmp != 0) return cmp;
-            return CompareByName(a, b);
         }
 
         private static DateTime GetItemCreationTime(string path)
@@ -992,16 +986,6 @@ namespace NoFences
             catch { }
             return DateTime.MinValue;
         }
-
-        private static int CompareByCreated(string a, string b)
-        {
-            DateTime timeA = GetItemCreationTime(a);
-            DateTime timeB = GetItemCreationTime(b);
-            int cmp = timeB.CompareTo(timeA); // 降序：最新创建在前
-            if (cmp != 0) return cmp;
-            return CompareByName(a, b);
-        }
-
 
         /// <summary>
         /// 监控分区托管目录。原生菜单的剪切操作可能在菜单关闭后才真正搬走文件，
@@ -1067,7 +1051,7 @@ namespace NoFences
                         return;
                     }
 
-                    thumbnailProvider.Remove(path);
+                    InvalidateEntry(path);
                     Invalidate();
                 }));
             }
@@ -1101,7 +1085,7 @@ namespace NoFences
                     }
                     else
                     {
-                        thumbnailProvider.Remove(oldPath);
+                        InvalidateEntry(oldPath);
                     }
                     selectedItem = null;
                     hoveringItem = null;
@@ -1242,6 +1226,11 @@ namespace NoFences
 
             autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
             ApplyContextMenuLocalization();
+            if (!AppSettingsManager.Instance.AutoSaveEnabled)
+            {
+                throttledMove.Cancel();
+                throttledResize.Cancel();
+            }
             scaleMenuControl?.Invalidate();
             Invalidate(true);
         }
@@ -2093,7 +2082,7 @@ namespace NoFences
             string error;
             if (FenceManager.Instance.TryRemoveEntry(fenceInfo, item, out error))
             {
-                thumbnailProvider.Remove(item);
+                InvalidateEntry(item);
                 hoveringItem = null;
                 if (selectedItem == item)
                     selectedItem = null;
@@ -2150,7 +2139,7 @@ namespace NoFences
                 string error;
                 if (FenceManager.Instance.TryRemoveEntry(fenceInfo, path, out error))
                 {
-                    thumbnailProvider.Remove(path);
+                    InvalidateEntry(path);
                     iconManagementSelection.Remove(path);
                     if (selectedItem == path)
                         selectedItem = null;
@@ -2323,16 +2312,7 @@ namespace NoFences
                 prevHeight = Height;
             }
 
-            throttledResize.Run(() =>
-            {
-                Rectangle expanded = GetCurrentExpandedBounds();
-                fenceInfo.PosX = expanded.X;
-                fenceInfo.PosY = expanded.Y;
-                fenceInfo.Width = expanded.Width;
-                fenceInfo.Height = expanded.Height;
-                fenceInfo.LastDpi = currentDpi;
-                Save();
-            });
+            ScheduleBoundsSave(throttledResize);
         }
 
         /// <summary>鼠标移动：处理图标拖拽移动判定，以及悬停高亮更新。</summary>
@@ -2360,25 +2340,7 @@ namespace NoFences
                 }
             }
 
-            string hitPath = null;
-            if (!isIconManagementMode &&
-                !string.IsNullOrEmpty(selectedItem) &&
-                entryHitBounds.TryGetValue(selectedItem, out Rectangle selectedBounds) &&
-                selectedBounds.Contains(e.Location))
-            {
-                hitPath = selectedItem;
-            }
-            else
-            {
-                foreach (KeyValuePair<string, Rectangle> item in entryHitBounds)
-                {
-                    if (item.Value.Contains(e.Location))
-                    {
-                        hitPath = item.Key;
-                        break;
-                    }
-                }
-            }
+            string hitPath = HitTestEntry(e.Location);
 
             int footerTarget = 0;
             if (isIconManagementMode)
@@ -2703,14 +2665,25 @@ namespace NoFences
             Refresh();
         }
 
-        /// <summary>双击：设置双击执行标志，由 Paint 周期实际处理。</summary>
+        /// <summary>双击优先命中选中条目的展开区域，再异步打开目标，绘制过程不执行启动操作。</summary>
         private void FenceWindow_DoubleClick(object sender, EventArgs e)
         {
             if (isIconManagementMode)
                 return;
 
-            shouldRunDoubleClick = true;
-            Refresh();
+            string path = HitTestEntry(PointToClient(MousePosition));
+            var entry = path != null ? GetEntry(path) : null;
+            if (entry == null)
+                return;
+            ReturnFenceToDesktop();
+            entry.Open();
+        }
+
+        /// <summary>从当前可见内容区域查找条目，展开的选中条目优先于其下方网格。</summary>
+        private string HitTestEntry(Point location)
+        {
+            return EntryHitTest.FindPath(entryHitBounds, selectedItem,
+                GetContentViewport(isIconManagementMode ? GetIconManagementFooterHeight() : 0), location);
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -2804,30 +2777,7 @@ namespace NoFences
             // 确保点击溢出文本条目时在同一渲染帧立即触发 needsExpand 展开，无需等待鼠标移出。
             if (!isIconManagementMode && shouldUpdateSelection && entryHitBounds.Count > 0)
             {
-                Point clickPos = PointToClient(MousePosition);
-                string clickedPath = null;
-                if (contentViewport.Contains(clickPos))
-                {
-                    if (!string.IsNullOrEmpty(selectedItem) &&
-                        entryHitBounds.TryGetValue(selectedItem, out Rectangle selectedBounds) &&
-                        selectedBounds.Contains(clickPos))
-                    {
-                        clickedPath = selectedItem;
-                    }
-                    else
-                    {
-                        foreach (KeyValuePair<string, Rectangle> kvp in entryHitBounds)
-                        {
-                            if (kvp.Value.Contains(clickPos))
-                            {
-                                clickedPath = kvp.Key;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                selectedItem = clickedPath;
+                selectedItem = HitTestEntry(PointToClient(MousePosition));
                 shouldUpdateSelection = false;
                 hasSelectionUpdated = true;
             }
@@ -2848,7 +2798,7 @@ namespace NoFences
 
             foreach (var file in fenceInfo.Files)
             {
-                var entry = FenceEntry.FromPath(file);
+                var entry = GetEntry(file);
                 if (entry == null)
                     continue;
 
@@ -2887,13 +2837,13 @@ namespace NoFences
                     needsExpand = testSize.Height > textHeight;
                 }
 
-                Rectangle entryBounds = RenderEntry(
-                    e.Graphics,
-                    entry,
-                    drawX,
-                    drawY,
-                    skipText: needsExpand);
-                entryHitBounds[entry.Path] = entryBounds;
+                var cellBounds = new Rectangle(drawX - 2, drawY - 2, itemWidth + 2, itemHeight + 4);
+                if (needsExpand || cellBounds.IntersectsWith(contentViewport))
+                {
+                    Rectangle entryBounds = RenderEntry(
+                        e.Graphics, entry, drawX, drawY, skipText: needsExpand);
+                    entryHitBounds[entry.Path] = entryBounds;
+                }
 
                 if (needsExpand)
                 {
@@ -2920,8 +2870,9 @@ namespace NoFences
 
             if (isIconManagementMode)
             {
-                iconManagementSelection.RemoveWhere(path =>
-                    !entryHitBounds.ContainsKey(path));
+                // 只绘制可见行后，不能用可见命中缓存清除滚出视口的多选条目。
+                var currentPaths = new HashSet<string>(fenceInfo.Files, StringComparer.OrdinalIgnoreCase);
+                iconManagementSelection.RemoveWhere(path => !currentPaths.Contains(path));
             }
 
             // 选中条目文字展开渲染：仅当文字超过标准 2 行高度时才进入此分支，高度不限，渲染在最顶层
@@ -3017,7 +2968,7 @@ namespace NoFences
                 DrawDropIndicator(e.Graphics, theme, contentViewport);
             }
 
-            // 单击/双击处理标志重置（这些标志在 Paint 周期中执行实际操作）
+            // 恢复内容裁剪，双击打开已在鼠标事件中完成目标解析。
             e.Graphics.Restore(contentState);
 
             // 绘制跟随鼠标移动的拖拽半透明幽灵图标
@@ -3050,7 +3001,6 @@ namespace NoFences
             if (!hasHoverUpdated)
                 hoveringItem = null;
 
-            shouldRunDoubleClick = false;
             shouldUpdateSelection = false;
             hasSelectionUpdated = false;
             hasHoverUpdated = false;
@@ -3250,14 +3200,6 @@ namespace NoFences
                 selectedItem = entry.Path;
                 shouldUpdateSelection = false;
                 hasSelectionUpdated = true;
-            }
-
-            // 双击打开（由 Paint 周期统一处理以保证命中测试一致性）
-            if (!isIconManagementMode && mouseOver && shouldRunDoubleClick)
-            {
-                shouldRunDoubleClick = false;
-                ReturnFenceToDesktop();
-                entry.Open();
             }
 
             // 绘制选中/悬停背景。XP 默认悬浮无反馈，且选中效果由后续的
@@ -3960,7 +3902,7 @@ namespace NoFences
         /// 使用带 Alpha 通道的位图和高质量双三次插值绘制图标，
         /// 避免 DrawIcon 缩放图标时退化为邻近取样产生锯齿或模糊。
         /// </summary>
-        private static void DrawIconHighQuality(Graphics graphics, Icon icon, Rectangle targetRectangle)
+        private void DrawIconHighQuality(Graphics graphics, Icon icon, Rectangle targetRectangle)
         {
             if (icon == null || targetRectangle.Width <= 0 || targetRectangle.Height <= 0)
                 return;
@@ -3971,14 +3913,13 @@ namespace NoFences
                 return;
             }
 
-            using (var bitmap = icon.ToBitmap())
-            {
+            var bitmap = thumbnailProvider.GetBitmap(icon);
+            if (bitmap != null)
                 graphics.DrawImage(bitmap, targetRectangle);
-            }
         }
 
         /// <summary>按当前桌面风格绘制原色图标或 XP 经典选中染色图标。</summary>
-        private static void DrawDesktopIconForState(
+        private void DrawDesktopIconForState(
             Graphics graphics,
             Icon icon,
             Rectangle targetRectangle,
@@ -3998,7 +3939,7 @@ namespace NoFences
         /// 将 XP 选中图标与系统 Highlight 色按 50% 混合，同时保持源 Alpha，
         /// 使透明边缘和图标轮廓仍然清晰可辨。
         /// </summary>
-        private static void DrawXpSelectedIcon(
+        private void DrawXpSelectedIcon(
             Graphics graphics,
             Icon icon,
             Rectangle targetRectangle)
@@ -4019,7 +3960,9 @@ namespace NoFences
                 new[] { red, green, blue, 0f, 1f }
             });
 
-            using (var bitmap = icon.ToBitmap())
+            var bitmap = thumbnailProvider.GetBitmap(icon);
+            if (bitmap == null)
+                return;
             using (var attributes = new ImageAttributes())
             {
                 attributes.SetColorMatrix(
@@ -4074,13 +4017,26 @@ namespace NoFences
         /// </summary>
         private void darkModeToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            ThemeManager.Instance.SetDarkMode(darkModeToolStripMenuItem.Checked);
+            SaveGlobalSetting(() => ThemeManager.Instance.SetDarkMode(darkModeToolStripMenuItem.Checked));
         }
 
         /// <summary>独立切换全局桌面分区移动自动吸附开关。</summary>
         private void autoSnapToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            AppSettingsManager.Instance.SetAutoSnap(autoSnapToolStripMenuItem.Checked);
+            SaveGlobalSetting(() => AppSettingsManager.Instance.SetAutoSnap(autoSnapToolStripMenuItem.Checked));
+        }
+
+        /// <summary>显示全局设置写盘失败，并将菜单勾选恢复到实际生效的状态。</summary>
+        private void SaveGlobalSetting(Action save)
+        {
+            try { save(); }
+            catch (Exception ex)
+            {
+                darkModeToolStripMenuItem.Checked = ThemeManager.Instance.DarkModeEnabled;
+                autoSnapToolStripMenuItem.Checked = AppSettingsManager.Instance.AutoSnapEnabled;
+                MessageBox.Show(this, ThemeText.PersistenceFailed + Environment.NewLine + ex.Message,
+                    ThemeText.PersistenceTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         /// <summary>窗口关闭：如果最后一个栅栏关闭则退出应用。</summary>
@@ -4116,6 +4072,7 @@ namespace NoFences
             AppSettingsManager.Instance.SettingsChanged -= AppSettingsManager_SettingsChanged;
             thumbnailProvider.IconThumbnailLoaded -= ThumbnailProvider_IconThumbnailLoaded;
             thumbnailProvider.Dispose();
+            entryCache.Clear();
             iconMetricsPollTimer.Stop();
             iconMetricsPollTimer.Dispose();
             shellContextMenu.MenuClosed -= ShellContextMenu_MenuClosed;
@@ -4193,8 +4150,18 @@ namespace NoFences
                 CheckAndHandleDpiChange();
             }
 
-            throttledMove.Run(() =>
+            ScheduleBoundsSave(throttledMove);
+        }
+
+        /// <summary>仅在自动保存启用时排队和执行布局保存，文件搬移事务仍独立强制写盘。</summary>
+        private void ScheduleBoundsSave(ThrottledExecution execution)
+        {
+            if (!AppSettingsManager.Instance.AutoSaveEnabled)
+                return;
+            execution.Run(() =>
             {
+                if (!AppSettingsManager.Instance.AutoSaveEnabled)
+                    return;
                 Rectangle expanded = GetCurrentExpandedBounds();
                 fenceInfo.PosX = expanded.X;
                 fenceInfo.PosY = expanded.Y;
@@ -4210,11 +4177,6 @@ namespace NoFences
         {
             fenceInfo.Locked = lockedToolStripMenuItem.Checked;
             Save();
-        }
-
-        private void FenceWindow_Load(object sender, EventArgs e)
-        {
-
         }
 
         /// <summary>打开标题设置对话框，支持实时预览；确定则保存修改，取消则恢复修改前的设置。</summary>
@@ -4368,7 +4330,7 @@ namespace NoFences
                     }
                     else if (!File.Exists(shellItem))
                     {
-                        thumbnailProvider.Remove(shellItem);
+                        InvalidateEntry(shellItem);
                     }
                     selectedItem = null;
                     hoveringItem = null;
@@ -4428,24 +4390,7 @@ namespace NoFences
             if (e.Button != MouseButtons.Left || isIconManagementMode || lockedToolStripMenuItem.Checked)
                 return;
 
-            string hitPath = null;
-            if (!string.IsNullOrEmpty(selectedItem) &&
-                entryHitBounds.TryGetValue(selectedItem, out Rectangle selBounds) &&
-                selBounds.Contains(e.Location))
-            {
-                hitPath = selectedItem;
-            }
-            else
-            {
-                foreach (KeyValuePair<string, Rectangle> pair in entryHitBounds)
-                {
-                    if (pair.Value.Contains(e.Location))
-                    {
-                        hitPath = pair.Key;
-                        break;
-                    }
-                }
-            }
+            string hitPath = HitTestEntry(e.Location);
 
             if (!string.IsNullOrEmpty(hitPath))
             {
@@ -4515,7 +4460,7 @@ namespace NoFences
                         {
                             if (selectedItem == draggedPath) selectedItem = null;
                             if (hoveringItem == draggedPath) hoveringItem = null;
-                            thumbnailProvider.Remove(draggedPath);
+                            InvalidateEntry(draggedPath);
                             this.Refresh();
                             targetFence.Refresh();
                         }
@@ -4535,7 +4480,7 @@ namespace NoFences
                         string error;
                         if (FenceManager.Instance.TryRemoveEntry(fenceInfo, draggedPath, out error))
                         {
-                            thumbnailProvider.Remove(draggedPath);
+                            InvalidateEntry(draggedPath);
                             if (selectedItem == draggedPath) selectedItem = null;
                             if (hoveringItem == draggedPath) hoveringItem = null;
                             Refresh();
@@ -4827,7 +4772,7 @@ namespace NoFences
             if (!isDraggingItem || string.IsNullOrEmpty(dragCandidatePath))
                 return;
 
-            var entry = FenceEntry.FromPath(dragCandidatePath);
+            var entry = GetEntry(dragCandidatePath);
             if (entry == null)
                 return;
 
@@ -4854,7 +4799,8 @@ namespace NoFences
             {
                 imgAttr.SetColorMatrix(matrix, System.Drawing.Imaging.ColorMatrixFlag.Default, System.Drawing.Imaging.ColorAdjustType.Bitmap);
 
-                using (Bitmap bmp = icon.ToBitmap())
+                Bitmap bmp = thumbnailProvider.GetBitmap(icon);
+                if (bmp != null)
                 {
                     graphics.DrawImage(
                         bmp,
@@ -4866,7 +4812,31 @@ namespace NoFences
             }
         }
 
-        /// <summary>检查路径是否存在（文件或文件夹）。</summary>
+        /// <summary>复用路径引用及显示名称，绘制期间不执行文件系统查询。</summary>
+        private FenceEntry GetEntry(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+            FenceEntry entry;
+            if (!entryCache.TryGetValue(path, out entry))
+            {
+                entry = FenceEntry.FromPath(path);
+                if (entry != null)
+                    entryCache.Add(path, entry);
+            }
+            return entry;
+        }
+
+        /// <summary>清理移除或变化条目的模型与图标缓存。</summary>
+        private void InvalidateEntry(string path)
+        {
+            if (path == null)
+                return;
+            entryCache.Remove(path);
+            thumbnailProvider.Remove(path);
+        }
+
+        /// <summary>检查拖入路径是否存在（文件或文件夹），只用于显式添加操作。</summary>
         private bool ItemExists(string path)
         {
             return File.Exists(path) || Directory.Exists(path);

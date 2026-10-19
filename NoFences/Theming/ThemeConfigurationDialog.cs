@@ -318,9 +318,10 @@ namespace NoFences.Theming
                 description: () => K(LKeys.ItemCheckUpdatesDesc),
                 toggleControl: checkUpdatesSwitch,
                 initialValue: savedAppSettings.CheckForUpdates,
-                defaultValue: true,
+                defaultValue: false,
                 getter: () => draftAppSettings.CheckForUpdates,
                 setter: v => draftAppSettings.CheckForUpdates = v));
+            checkUpdatesSwitch.IsInteractive = false;
 
             // 分组 2：存储设置
             var storageGroup = new SettingsGroupDescriptor
@@ -331,6 +332,7 @@ namespace NoFences.Theming
             };
 
             dataPathPicker.Width = 290;
+            dataPathPicker.IsInteractive = false;
             var dataPathBinding = new SettingsBinding<string>(
                 key: "basic.dataStoragePath",
                 categoryId: CategoryBasicId,
@@ -1449,6 +1451,11 @@ namespace NoFences.Theming
                     return;
                 }
 
+                // 基础配置已经提交。主题保存失败时也需如实记录这部分已生效状态。
+                AcceptSavedAppSettings(AppSettingsManager.Instance.CurrentSettings);
+                if (languageChanged)
+                    RefreshDialogLocalization();
+
                 // 3. 规范化并持久化保存主题设置
                 draftCustomLightTheme.Normalize();
                 draftCustomDarkTheme.Normalize();
@@ -1469,11 +1476,6 @@ namespace NoFences.Theming
                 foreach (var binding in bindings)
                     binding.CommitSnapshot();
 
-                if (languageChanged)
-                {
-                    RefreshDialogLocalization();
-                }
-
                 UpdateDirtyStateAndActionBar(
                     StatusKind.SavedSuccess,
                     K(LKeys.StatusSavedSuccess));
@@ -1489,6 +1491,18 @@ namespace NoFences.Theming
                 isSaving = false;
                 saveButton.Enabled = HasUnsavedChanges();
                 cancelButton.Enabled = true;
+            }
+        }
+
+        /// <summary>同步已提交的基础设置与绑定快照，主题保存失败后取消仍保留这部分已生效值。</summary>
+        private void AcceptSavedAppSettings(AppSettings committedSettings)
+        {
+            savedAppSettings = committedSettings.Clone();
+            draftAppSettings = savedAppSettings.Clone();
+            foreach (var binding in bindings)
+            {
+                if (binding.CategoryId == CategoryBasicId)
+                    binding.CommitSnapshot();
             }
         }
 

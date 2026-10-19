@@ -38,6 +38,7 @@ namespace NoFences.Util
         private readonly CancellationTokenSource cancellation = new CancellationTokenSource();
         private readonly IDictionary<string, ThumbnailState> iconCache =
             new Dictionary<string, ThumbnailState>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<Icon, Bitmap> bitmapCache = new Dictionary<Icon, Bitmap>();
         private readonly SynchronizationContext uiContext;
         private int targetSize;
         private bool disposed;
@@ -85,7 +86,8 @@ namespace NoFences.Util
                 {
                     state = new ThumbnailState
                     {
-                        Icon = IconUtil.GetFallbackIcon(path)
+                        // 占位不能调用 Shell 扩展或读取磁盘，真实图标统一在后台提取。
+                        Icon = (Icon)SystemIcons.Application.Clone()
                     };
                     iconCache[path] = state;
                 }
@@ -116,9 +118,40 @@ namespace NoFences.Util
                 {
                     iconCache.Remove(path);
                     icon = state.Icon;
+                    RemoveBitmap(icon);
                 }
             }
             icon?.Dispose();
+        }
+
+        /// <summary>缓存当前图标的位图副本，调用方只借用，替换图标或关闭提供器时统一释放。</summary>
+        public Bitmap GetBitmap(Icon icon)
+        {
+            if (icon == null)
+                return null;
+            lock (syncRoot)
+            {
+                if (disposed)
+                    return null;
+                Bitmap bitmap;
+                if (!bitmapCache.TryGetValue(icon, out bitmap))
+                {
+                    bitmap = icon.ToBitmap();
+                    bitmapCache.Add(icon, bitmap);
+                }
+                return bitmap;
+            }
+        }
+
+        /// <summary>在缓存锁内释放一个图标对应的位图，避免每帧重复转换和旧版本滞留。</summary>
+        private void RemoveBitmap(Icon icon)
+        {
+            Bitmap bitmap;
+            if (icon != null && bitmapCache.TryGetValue(icon, out bitmap))
+            {
+                bitmapCache.Remove(icon);
+                bitmap.Dispose();
+            }
         }
 
         private void QueueGeneration(
@@ -138,9 +171,17 @@ namespace NoFences.Util
                     await semaphore.WaitAsync(token).ConfigureAwait(false);
                     entered = true;
                     token.ThrowIfCancellationRequested();
-                    generated = imageThumbnail
-                        ? GenerateImageThumbnail(path, generationSize)
-                        : IconUtil.GetLargeIcon(path, generationSize);
+                    if (imageThumbnail)
+                    {
+                        try { generated = GenerateImageThumbnail(path, generationSize); }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Trace.WriteLine("Image thumbnail fallback: " + ex);
+                            generated = IconUtil.GetFallbackIcon(path);
+                        }
+                    }
+                    else
+                        generated = IconUtil.GetLargeIcon(path, generationSize);
                 }
                 catch (OperationCanceledException)
                 {
@@ -283,6 +324,7 @@ namespace NoFences.Util
                     if (failure == null && generated != null && targetSize == generationSize)
                     {
                         previous = state.Icon;
+                        RemoveBitmap(previous);
                         state.Icon = generated;
                         state.TargetSize = generationSize;
                         state.FailedSize = 0;
@@ -328,6 +370,9 @@ namespace NoFences.Util
                     .Where(icon => icon != null)
                     .ToList();
                 iconCache.Clear();
+                foreach (Bitmap bitmap in bitmapCache.Values)
+                    bitmap.Dispose();
+                bitmapCache.Clear();
                 IconThumbnailLoaded = null;
             }
 

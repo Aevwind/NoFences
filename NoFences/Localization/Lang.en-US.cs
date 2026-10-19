@@ -120,12 +120,12 @@ namespace NoFences.Localization
             d[LKeys.ItemLaunchAtStartupDesc] = "Automatically run this application when Windows starts.";
             d[LKeys.ItemLanguageTitle] = "Language";
             d[LKeys.ItemLanguageDesc] = "Select the display language for the application.";
-            d[LKeys.ItemCheckUpdatesTitle] = "Check for updates";
-            d[LKeys.ItemCheckUpdatesDesc] = "Periodically check for new versions and updates.";
+            d[LKeys.ItemCheckUpdatesTitle] = "Check for updates (unavailable)";
+            d[LKeys.ItemCheckUpdatesDesc] = "Automatic update checks are not available in this version.";
 
             d[LKeys.GroupStorageTitle] = "Storage Settings";
             d[LKeys.ItemDataPathTitle] = "Data storage location";
-            d[LKeys.ItemDataPathDesc] = "Directory where application data and metadata are stored.";
+            d[LKeys.ItemDataPathDesc] = "Current data location. Changing it is not supported in this version.";
             d[LKeys.DialogSelectDataDir] = "Select application data storage directory";
             d[LKeys.ItemAutoSaveTitle] = "Auto save";
             d[LKeys.ItemAutoSaveDesc] = "Automatically save current configuration and fence changes.";

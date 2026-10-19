@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using System.Drawing;
 using System.Windows.Forms;
 using System.IO;
-using System.Threading;
 
 namespace Peter
 {
@@ -261,22 +260,27 @@ namespace Peter
 
         #region GetDesktopFolder()
         /// <summary>
-        /// Gets the desktop folder
+        /// 获取桌面文件夹，包装成功或失败后均释放原始 COM 接口引用。
         /// </summary>
         /// <returns>IShellFolder for desktop folder</returns>
         private IShellFolder GetDesktopFolder()
         {
-            IntPtr pUnkownDesktopFolder = IntPtr.Zero;
-
             if (null == _oDesktopFolder)
             {
-                // Get desktop IShellFolder
-                int nResult = SHGetDesktopFolder(out pUnkownDesktopFolder);
-                if (S_OK != nResult)
+                IntPtr desktopPointer = IntPtr.Zero;
+                try
                 {
-                    throw new ShellContextMenuException("Failed to get the desktop shell folder");
+                    int result = SHGetDesktopFolder(out desktopPointer);
+                    if (S_OK != result || desktopPointer == IntPtr.Zero)
+                        throw new ShellContextMenuException("Failed to get the desktop shell folder");
+                    _oDesktopFolder = (IShellFolder)Marshal.GetTypedObjectForIUnknown(
+                        desktopPointer, typeof(IShellFolder));
                 }
-                _oDesktopFolder = (IShellFolder)Marshal.GetTypedObjectForIUnknown(pUnkownDesktopFolder, typeof(IShellFolder));
+                finally
+                {
+                    if (desktopPointer != IntPtr.Zero)
+                        Marshal.Release(desktopPointer);
+                }
             }
 
             return _oDesktopFolder;
@@ -285,7 +289,7 @@ namespace Peter
 
         #region GetParentFolder()
         /// <summary>
-        /// Gets the parent folder
+        /// 获取父文件夹，并在所有返回和异常路径释放 PIDL、字符串缓冲区与原始接口。
         /// </summary>
         /// <param name="folderName">Folder path</param>
         /// <returns>IShellFolder for the folder (relative from the desktop)</returns>
@@ -299,35 +303,42 @@ namespace Peter
                     return null;
                 }
 
-                // Get the PIDL for the folder file is in
                 IntPtr pPIDL = IntPtr.Zero;
-                uint pchEaten = 0;
-                SFGAO pdwAttributes = 0;
-                int nResult = oDesktopFolder.ParseDisplayName(IntPtr.Zero, IntPtr.Zero, folderName, ref pchEaten, out pPIDL, ref pdwAttributes);
-                if (S_OK != nResult)
+                IntPtr pStrRet = IntPtr.Zero;
+                IntPtr parentPointer = IntPtr.Zero;
+                try
                 {
-                    return null;
+                    uint pchEaten = 0;
+                    SFGAO attributes = 0;
+                    int result = oDesktopFolder.ParseDisplayName(
+                        IntPtr.Zero, IntPtr.Zero, folderName, ref pchEaten, out pPIDL, ref attributes);
+                    if (S_OK != result)
+                        return null;
+
+                    pStrRet = Marshal.AllocCoTaskMem(MAX_PATH * 2 + 4);
+                    Marshal.WriteInt32(pStrRet, 0, 0);
+                    if (S_OK != oDesktopFolder.GetDisplayNameOf(pPIDL, SHGNO.FORPARSING, pStrRet))
+                        return null;
+                    var folder = new StringBuilder(MAX_PATH);
+                    if (S_OK != StrRetToBuf(pStrRet, pPIDL, folder, MAX_PATH))
+                        return null;
+                    _strParentFolder = folder.ToString();
+
+                    result = oDesktopFolder.BindToObject(pPIDL, IntPtr.Zero, ref IID_IShellFolder, out parentPointer);
+                    if (S_OK != result || parentPointer == IntPtr.Zero)
+                        return null;
+                    _oParentFolder = (IShellFolder)Marshal.GetTypedObjectForIUnknown(
+                        parentPointer, typeof(IShellFolder));
                 }
-
-                IntPtr pStrRet = Marshal.AllocCoTaskMem(MAX_PATH * 2 + 4);
-                Marshal.WriteInt32(pStrRet, 0, 0);
-                nResult = _oDesktopFolder.GetDisplayNameOf(pPIDL, SHGNO.FORPARSING, pStrRet);
-                StringBuilder strFolder = new StringBuilder(MAX_PATH);
-                StrRetToBuf(pStrRet, pPIDL, strFolder, MAX_PATH);
-                Marshal.FreeCoTaskMem(pStrRet);
-                pStrRet = IntPtr.Zero;
-                _strParentFolder = strFolder.ToString();
-
-                // Get the IShellFolder for folder
-                IntPtr pUnknownParentFolder = IntPtr.Zero;
-                nResult = oDesktopFolder.BindToObject(pPIDL, IntPtr.Zero, ref IID_IShellFolder, out pUnknownParentFolder);
-                // Free the PIDL first
-                Marshal.FreeCoTaskMem(pPIDL);
-                if (S_OK != nResult)
+                finally
                 {
-                    return null;
+                    if (parentPointer != IntPtr.Zero)
+                        Marshal.Release(parentPointer);
+                    if (pStrRet != IntPtr.Zero)
+                        Marshal.FreeCoTaskMem(pStrRet);
+                    if (pPIDL != IntPtr.Zero)
+                        Marshal.FreeCoTaskMem(pPIDL);
                 }
-                _oParentFolder = (IShellFolder)Marshal.GetTypedObjectForIUnknown(pUnknownParentFolder, typeof(IShellFolder));
             }
 
             return _oParentFolder;
@@ -431,64 +442,6 @@ namespace Peter
                         arrPIDLs[n] = IntPtr.Zero;
                     }
                 }
-            }
-        }
-        #endregion
-
-        #region InvokeContextMenuDefault
-        private void InvokeContextMenuDefault(FileInfo[] arrFI)
-        {
-            // Release all resources first.
-            ReleaseAll();
-
-            IntPtr pMenu = IntPtr.Zero,
-                iContextMenuPtr = IntPtr.Zero;
-
-            try
-            {
-                _arrPIDLs = GetPIDLs(arrFI);
-                if (null == _arrPIDLs)
-                {
-                    ReleaseAll();
-                    return;
-                }
-
-                if (false == GetContextMenuInterfaces(_oParentFolder, _arrPIDLs, out iContextMenuPtr))
-                {
-                    ReleaseAll();
-                    return;
-                }
-
-                pMenu = CreatePopupMenu();
-
-                int nResult = _oContextMenu.QueryContextMenu(
-                    pMenu,
-                    0,
-                    CMD_FIRST,
-                    CMD_LAST,
-                    CMF.DEFAULTONLY |
-                    ((Control.ModifierKeys & Keys.Shift) != 0 ? CMF.EXTENDEDVERBS : 0));
-
-                uint nDefaultCmd = (uint)GetMenuDefaultItem(pMenu, false, 0);
-                if (nDefaultCmd >= CMD_FIRST)
-                {
-                    InvokeCommand(_oContextMenu, nDefaultCmd, arrFI[0].DirectoryName, Control.MousePosition);
-                }
-
-                DestroyMenu(pMenu);
-                pMenu = IntPtr.Zero;
-            }
-            catch
-            {
-                throw;
-            }
-            finally
-            {
-                if (pMenu != IntPtr.Zero)
-                {
-                    DestroyMenu(pMenu);
-                }
-                ReleaseAll();
             }
         }
         #endregion
@@ -644,7 +597,6 @@ namespace Peter
         private const uint CMD_LAST = 30000;
 
         private const int S_OK = 0;
-        private const int S_FALSE = 1;
 
         private static int cbMenuItemInfo = Marshal.SizeOf(typeof(MENUITEMINFO));
         private static int cbInvokeCommand = Marshal.SizeOf(typeof(CMINVOKECOMMANDINFOEX));
@@ -672,10 +624,6 @@ namespace Peter
         // The DestroyMenu function destroys the specified menu and frees any memory that the menu occupies.
         [DllImport("user32", SetLastError = true, CharSet = CharSet.Auto)]
         private static extern bool DestroyMenu(IntPtr hMenu);
-
-        // Determines the default menu item on the specified menu
-        [DllImport("user32", SetLastError = true, CharSet = CharSet.Auto)]
-        private static extern int GetMenuDefaultItem(IntPtr hMenu, bool fByPos, uint gmdiFlags);
 
         #endregion
 
@@ -1484,147 +1432,6 @@ namespace Peter
             : base(message)
         {
         }
-    }
-    #endregion
-
-    #region Class HookEventArgs
-    public class HookEventArgs : EventArgs
-    {
-        public int HookCode;	// Hook code
-        public IntPtr wParam;	// WPARAM argument
-        public IntPtr lParam;	// LPARAM argument
-    }
-    #endregion
-
-    #region Enum HookType
-    // Hook Types
-    public enum HookType : int
-    {
-        WH_JOURNALRECORD = 0,
-        WH_JOURNALPLAYBACK = 1,
-        WH_KEYBOARD = 2,
-        WH_GETMESSAGE = 3,
-        WH_CALLWNDPROC = 4,
-        WH_CBT = 5,
-        WH_SYSMSGFILTER = 6,
-        WH_MOUSE = 7,
-        WH_HARDWARE = 8,
-        WH_DEBUG = 9,
-        WH_SHELL = 10,
-        WH_FOREGROUNDIDLE = 11,
-        WH_CALLWNDPROCRET = 12,
-        WH_KEYBOARD_LL = 13,
-        WH_MOUSE_LL = 14
-    }
-    #endregion
-
-    #region Class LocalWindowsHook
-    public class LocalWindowsHook
-    {
-        // ************************************************************************
-        // Filter function delegate
-        public delegate int HookProc(int code, IntPtr wParam, IntPtr lParam);
-        // ************************************************************************
-
-        // ************************************************************************
-        // Internal properties
-        protected IntPtr m_hhook = IntPtr.Zero;
-        protected HookProc m_filterFunc = null;
-        protected HookType m_hookType;
-        // ************************************************************************
-
-        // ************************************************************************
-        // Event delegate
-        public delegate void HookEventHandler(object sender, HookEventArgs e);
-        // ************************************************************************
-
-        // ************************************************************************
-        // Event: HookInvoked 
-        public event HookEventHandler HookInvoked;
-        protected void OnHookInvoked(HookEventArgs e)
-        {
-            if (HookInvoked != null)
-                HookInvoked(this, e);
-        }
-        // ************************************************************************
-
-        // ************************************************************************
-        // Class constructor(s)
-        public LocalWindowsHook(HookType hook)
-        {
-            m_hookType = hook;
-            m_filterFunc = new HookProc(this.CoreHookProc);
-        }
-        public LocalWindowsHook(HookType hook, HookProc func)
-        {
-            m_hookType = hook;
-            m_filterFunc = func;
-        }
-        // ************************************************************************
-
-        // ************************************************************************
-        // Default filter function
-        protected int CoreHookProc(int code, IntPtr wParam, IntPtr lParam)
-        {
-            if (code < 0)
-                return CallNextHookEx(m_hhook, code, wParam, lParam);
-
-            // Let clients determine what to do
-            HookEventArgs e = new HookEventArgs();
-            e.HookCode = code;
-            e.wParam = wParam;
-            e.lParam = lParam;
-            OnHookInvoked(e);
-
-            // Yield to the next hook in the chain
-            return CallNextHookEx(m_hhook, code, wParam, lParam);
-        }
-        // ************************************************************************
-
-        // ************************************************************************
-        // Install the hook
-        public void Install()
-        {
-            m_hhook = SetWindowsHookEx(
-                m_hookType,
-                m_filterFunc,
-                IntPtr.Zero,
-                (int)Thread.CurrentThread.ManagedThreadId);
-        }
-        // ************************************************************************
-
-        // ************************************************************************
-        // Uninstall the hook
-        public void Uninstall()
-        {
-            UnhookWindowsHookEx(m_hhook);
-        }
-        // ************************************************************************
-
-
-        #region Win32 Imports
-        // ************************************************************************
-        // Win32: SetWindowsHookEx()
-        [DllImport("user32.dll")]
-        protected static extern IntPtr SetWindowsHookEx(HookType code,
-            HookProc func,
-            IntPtr hInstance,
-            int threadID);
-        // ************************************************************************
-
-        // ************************************************************************
-        // Win32: UnhookWindowsHookEx()
-        [DllImport("user32.dll")]
-        protected static extern int UnhookWindowsHookEx(IntPtr hhook);
-        // ************************************************************************
-
-        // ************************************************************************
-        // Win32: CallNextHookEx()
-        [DllImport("user32.dll")]
-        protected static extern int CallNextHookEx(IntPtr hhook,
-            int code, IntPtr wParam, IntPtr lParam);
-        // ************************************************************************
-        #endregion
     }
     #endregion
 

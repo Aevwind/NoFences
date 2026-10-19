@@ -120,12 +120,12 @@ namespace NoFences.Localization
             d[LKeys.ItemLaunchAtStartupDesc] = "系統啟動時自動執行本應用。";
             d[LKeys.ItemLanguageTitle] = "語言";
             d[LKeys.ItemLanguageDesc] = "選擇應用介面語言。";
-            d[LKeys.ItemCheckUpdatesTitle] = "檢查更新";
-            d[LKeys.ItemCheckUpdatesDesc] = "定期檢查新版本，取得最新功能和修復。";
+            d[LKeys.ItemCheckUpdatesTitle] = "檢查更新（尚未支援）";
+            d[LKeys.ItemCheckUpdatesDesc] = "目前版本尚未提供自動更新檢查。";
 
             d[LKeys.GroupStorageTitle] = "儲存設定";
             d[LKeys.ItemDataPathTitle] = "資料儲存位置";
-            d[LKeys.ItemDataPathDesc] = "應用資料（如設定、快取等）存放的目錄。";
+            d[LKeys.ItemDataPathDesc] = "目前的資料儲存位置；此版本尚不支援變更。";
             d[LKeys.DialogSelectDataDir] = "選擇應用資料儲存目錄";
             d[LKeys.ItemAutoSaveTitle] = "自動儲存";
             d[LKeys.ItemAutoSaveDesc] = "結束時自動儲存目前設定。";

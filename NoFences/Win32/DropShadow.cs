@@ -14,14 +14,6 @@ namespace NoFences.Win32
 
         #region Fields
 
-        private const int WM_NCHITTEST = 0x84;
-        private const int WS_MINIMIZEBOX = 0x20000;
-        private const int HTCLIENT = 0x1;
-        private const int HTCAPTION = 0x2;
-        private const int CS_DBLCLKS = 0x8;
-        private const int CS_DROPSHADOW = 0x00020000;
-        private const int WM_NCPAINT = 0x0085;
-        private const int WM_ACTIVATEAPP = 0x001C;
         private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
         private const int DWMWA_BORDER_COLOR = 34;
         private const int DWMWCP_DONOTROUND = 1;
@@ -59,11 +51,6 @@ namespace NoFences.Win32
         [EditorBrowsable(EditorBrowsableState.Never)]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
-        /// <summary>查询 DWM 合成状态是否启用。</summary>
-        [DllImport("dwmapi.dll")]
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public static extern int DwmIsCompositionEnabled(ref int pfEnabled);
-
         /// <summary>检查 DWM 合成是否可用（Vista+）。</summary>
         [EditorBrowsable(EditorBrowsableState.Never)]
         public static bool IsCompositionEnabled()
@@ -83,43 +70,9 @@ namespace NoFences.Win32
         [DllImport("dwmapi.dll")]
         private static extern int DwmIsCompositionEnabled(out bool enabled);
 
-        /// <summary>创建圆角矩形区域句柄（GDI）。</summary>
-        [DllImport("Gdi32.dll", EntryPoint = "CreateRoundRectRgn")]
-        private static extern IntPtr CreateRoundRectRgn
-        (
-            int nLeftRect,
-            int nTopRect,
-            int nRightRect,
-            int nBottomRect,
-            int nWidthEllipse,
-            int nHeightEllipse
-         );
-
-        /// <summary>检查 Aero 是否启用（Vista/7）。</summary>
-        private bool CheckIfAeroIsEnabled()
-        {
-            if (Environment.OSVersion.Version.Major >= 6)
-            {
-                int enabled = 0;
-                DwmIsCompositionEnabled(ref enabled);
-
-                return (enabled == 1) ? true : false;
-            }
-            return false;
-        }
-
         #endregion
 
         #region Overrides
-
-        /// <summary>
-        /// 为 WinForms 窗体应用 DWM 原生阴影效果。
-        /// 通过 DwmExtendFrameIntoClientArea 和 DwmSetWindowAttribute 实现。
-        /// </summary>
-        public static void ApplyShadows(Form form)
-        {
-            SetShadow(form, true);
-        }
 
         /// <summary>
         /// 启用或关闭 DWM 原生投影。使用 WinForms Region 的自定义圆角必须
