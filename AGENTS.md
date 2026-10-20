@@ -15,6 +15,7 @@
 - 输出为 `NoFences/bin/Release/NoFences.exe`。`msbuild` 不在 PATH 时可查找 Visual Studio 安装目录中的 MSBuild；缺少工具时明确报告未完成构建，不把语法检查当成构建成功。
 - [NoFences.csproj](NoFences/NoFences.csproj) 是传统项目，新增/删除 `.cs` 或资源文件需要同步显式的 `Compile` / `EmbeddedResource` 项。
 - 没有测试项目或测试框架。先构建 Release，再在 Windows PowerShell 5.1 下执行隔离回归脚本：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/Verify-Regressions.ps1`。CI 在打包前也执行该脚本。脚本在 `NoFences/obj` 中创建临时数据，不显示窗口或修改桌面文件；桌面交互仍需按受影响功能手工验证。
+- 默认输出被占用时可通过 MSBuild 的 `OutDir` 指定独立目录，并用脚本的 `-AssemblyPath` 参数验证该目录中的新产物；不要误把旧的运行文件当作本次构建结果。
 
 ## 模块职责
 

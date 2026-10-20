@@ -1,5 +1,7 @@
 ﻿#requires -Version 5.1
 # 在 Windows PowerShell 5.1 下使用隔离目录验证构建产物，不显示窗口或修改桌面文件。
+param([string]$AssemblyPath)
+
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -ne 'Desktop') {
     throw 'Run this script with Windows PowerShell 5.1 (powershell.exe).'
@@ -139,7 +141,10 @@ public static class GridLayoutRegression
     }
 }
 '@
-$validationAssembly = [Reflection.Assembly]::LoadFrom((Join-Path $PSScriptRoot '..\NoFences\bin\Release\NoFences.exe'))
+if ([string]::IsNullOrWhiteSpace($AssemblyPath)) {
+    $AssemblyPath = Join-Path $PSScriptRoot '..\NoFences\bin\Release\NoFences.exe'
+}
+$validationAssembly = [Reflection.Assembly]::LoadFrom([IO.Path]::GetFullPath($AssemblyPath))
 $validationRoot = Join-Path (Join-Path $PSScriptRoot '..\NoFences\obj') ('review-sandbox-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($validationRoot)
 $validationStore = $validationAssembly.GetType('NoFences.Util.XmlFileStore', $true)
