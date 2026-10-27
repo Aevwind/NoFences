@@ -61,6 +61,11 @@ namespace NoFences
         private const int WM_RBUTTONDOWN = 0x0204;
         private const int WM_MBUTTONDOWN = 0x0207;
         private const int WM_XBUTTONDOWN = 0x020B;
+        private const int VK_LBUTTON = 0x01;
+        private const int VK_RBUTTON = 0x02;
+        private bool isProcessingRightButtonUp;
+        private bool hasNonClientRightButtonDown;
+        private bool rightClickHandledInCurrentUp;
         private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
         private readonly LowLevelMouseProc interactionMouseHookProc;
         private IntPtr interactionMouseHook;
@@ -1324,8 +1329,25 @@ namespace NoFences
             if (m.Msg == WM_WINDOWPOSCHANGING)
                 PreserveFenceZOrder(m.LParam);
 
+            if (m.Msg == WM_RBUTTONDOWN)
+                hasNonClientRightButtonDown = false;
+            else if (m.Msg == WM_NCRBUTTONDOWN)
+                hasNonClientRightButtonDown = true;
+
             if (m.Msg == WM_NCLBUTTONDOWN || m.Msg == WM_NCRBUTTONDOWN)
                 KeepInteractedFenceOnTop();
+
+            if (m.Msg == WM_NCRBUTTONUP)
+            {
+                hasNonClientRightButtonDown = false;
+                Point clientPoint = PointToClient(new Point(m.LParam.ToInt32()));
+                if (ClientRectangle.Contains(clientPoint))
+                {
+                    FenceWindow_MouseClick(this, new MouseEventArgs(MouseButtons.Right, 1, clientPoint.X, clientPoint.Y, 0));
+                }
+                m.Result = IntPtr.Zero;
+                return;
+            }
 
             if (m.Msg == WM_ENTERSIZEMOVE)
             {
@@ -1463,10 +1485,38 @@ namespace NoFences
                 ApplyIconMetrics();
             }
 
+            if (m.Msg == WM_RBUTTONUP)
+            {
+                bool hadNonClientRightDown = hasNonClientRightButtonDown;
+                hasNonClientRightButtonDown = false;
+                rightClickHandledInCurrentUp = false;
+                isProcessingRightButtonUp = true;
+                try
+                {
+                    base.WndProc(ref m);
+                }
+                finally
+                {
+                    isProcessingRightButtonUp = false;
+                }
+
+                if (hadNonClientRightDown && !rightClickHandledInCurrentUp)
+                {
+                    Point clientPoint = new Point(
+                        unchecked((short)((long)m.LParam & 0xFFFF)),
+                        unchecked((short)(((long)m.LParam >> 16) & 0xFFFF)));
+                    if (ClientRectangle.Contains(clientPoint))
+                    {
+                        FenceWindow_MouseClick(this, new MouseEventArgs(MouseButtons.Right, 1, clientPoint.X, clientPoint.Y, 0));
+                    }
+                }
+                return;
+            }
+
             base.WndProc(ref m);
 
             // 处于图标拖拽状态、锁定状态或鼠标右键按下时，不允许拖动和调整大小
-            if (isDraggingItem || MouseButtons == MouseButtons.Right || lockedToolStripMenuItem.Checked)
+            if (isDraggingItem || MouseButtons == MouseButtons.Right || IsRightMouseButtonDown() || isProcessingRightButtonUp || lockedToolStripMenuItem.Checked)
                 return;
 
             // WM_NCHITTEST：自定义无边框窗口的拖动和调整大小区域
@@ -1498,6 +1548,13 @@ namespace NoFences
                     m.Result = new IntPtr(HTLEFT);
                 else if (pt.X > (Width - 10))
                     m.Result = new IntPtr(HTRIGHT);
+
+                if ((int)m.Result != HTCLIENT && (hoveringItem != null || iconManagementHoverTarget != 0))
+                {
+                    hoveringItem = null;
+                    iconManagementHoverTarget = 0;
+                    Invalidate();
+                }
             }
         }
 
@@ -1932,6 +1989,19 @@ namespace NoFences
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool EndMenu();
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
+
+        /// <summary>检测鼠标右键是否处于按下状态（兼顾消息队列状态与实时物理按键状态）。</summary>
+        private static bool IsRightMouseButtonDown()
+        {
+            if ((MouseButtons & MouseButtons.Right) != 0)
+                return true;
+
+            int rightButtonVirtualKey = SystemInformation.MouseButtonsSwapped ? VK_LBUTTON : VK_RBUTTON;
+            return (GetAsyncKeyState(rightButtonVirtualKey) & 0x8000) != 0;
+        }
 
         /// <summary>
         /// 计算窗口移动时的边缘与邻近桌面分区自动吸附坐标。
@@ -4259,6 +4329,15 @@ namespace NoFences
             // 原生 Shell 菜单会进入自己的模态循环；打开前确保当前分区位于前面。
             KeepInteractedFenceOnTop();
 
+            rightClickHandledInCurrentUp = true;
+
+            string hitPath = HitTestEntry(e.Location);
+            if (!string.Equals(hoveringItem, hitPath, StringComparison.OrdinalIgnoreCase))
+            {
+                hoveringItem = hitPath;
+                Invalidate();
+            }
+
             if (hoveringItem != null && !ModifierKeys.HasFlag(Keys.Shift))
             {
                 // 右键条目 → Windows Shell 右键菜单
@@ -4320,7 +4399,13 @@ namespace NoFences
             else
             {
                 // Shift+右键或空白处 → 应用菜单
-                ShowAppContextMenu(e.Location);
+                Point screenLocation = PointToScreen(e.Location);
+                if (minifyToolStripMenuItem.Checked && isMinified)
+                {
+                    ExpandFromMinified();
+                }
+                Point clientLocation = PointToClient(screenLocation);
+                ShowAppContextMenu(clientLocation);
             }
         }
 

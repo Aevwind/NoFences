@@ -39,6 +39,8 @@ namespace NoFences.Win32
         public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
         public const int WM_NCLBUTTONDOWN = 0x00A1;
         public const int WM_NCRBUTTONDOWN = 0x00A4;
+        public const int WM_NCRBUTTONUP = 0x00A5;
+        public const int WM_RBUTTONUP = 0x0205;
         public const int WM_MOUSEACTIVATE = 0x0021;
         public const int MA_ACTIVATE = 1;
         public const int MA_ACTIVATEANDEAT = 2;
