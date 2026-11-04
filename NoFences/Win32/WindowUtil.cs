@@ -206,6 +206,7 @@ namespace NoFences.Win32
         {
             WS_EX_TOPMOST = 0x00000008, // 临时置顶窗口
             WS_EX_TOOLWINDOW = 0x00000080, // 工具窗口：从 Alt+Tab 和任务栏中隐藏
+            WS_EX_NOACTIVATE = 0x08000000, // 不可激活：不会被系统选为前台窗口
         }
 
         /// <summary>GetWindowLong 索引枚举。</summary>

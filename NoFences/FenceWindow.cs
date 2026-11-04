@@ -1360,30 +1360,36 @@ namespace NoFences
                 hasMoveOrigin = false;
                 CheckAndHandleDpiChange();
             }
-            else if (m.Msg == WM_MOVING && AppSettingsManager.Instance.AutoSnapEnabled)
+            else if (m.Msg == WM_MOVING)
             {
                 var rect = Marshal.PtrToStructure<RECT>(m.LParam);
-                int width = Width > 0 ? Width : rect.Width;
-                int height = Height > 0 ? Height : rect.Height;
-
-                if (!hasMoveOrigin)
+                if (AppSettingsManager.Instance.AutoSnapEnabled)
                 {
-                    hasMoveOrigin = true;
-                    moveStartCursor = Cursor.Position;
-                    moveStartLocation = new Point(rect.Left, rect.Top);
+                    int width = Width > 0 ? Width : rect.Width;
+                    int height = Height > 0 ? Height : rect.Height;
+
+                    if (!hasMoveOrigin)
+                    {
+                        hasMoveOrigin = true;
+                        moveStartCursor = Cursor.Position;
+                        moveStartLocation = new Point(rect.Left, rect.Top);
+                    }
+
+                    Point cursor = Cursor.Position;
+                    int targetLeft = moveStartLocation.X + (cursor.X - moveStartCursor.X);
+                    int targetTop = moveStartLocation.Y + (cursor.Y - moveStartCursor.Y);
+
+                    ApplyAutoSnapPosition(ref targetLeft, ref targetTop, width, height, cursor);
+
+                    rect.Left = targetLeft;
+                    rect.Top = targetTop;
+                    rect.Right = targetLeft + width;
+                    rect.Bottom = targetTop + height;
+                    Marshal.StructureToPtr(rect, m.LParam, false);
                 }
 
-                Point cursor = Cursor.Position;
-                int targetLeft = moveStartLocation.X + (cursor.X - moveStartCursor.X);
-                int targetTop = moveStartLocation.Y + (cursor.Y - moveStartCursor.Y);
-
-                ApplyAutoSnapPosition(ref targetLeft, ref targetTop, width, height, cursor);
-
-                rect.Left = targetLeft;
-                rect.Top = targetTop;
-                rect.Right = targetLeft + width;
-                rect.Bottom = targetTop + height;
-                Marshal.StructureToPtr(rect, m.LParam, false);
+                // 分区不可激活，系统移动循环不会实时移动窗口，需要按建议矩形立即应用。
+                ApplyLiveMoveSizeRect(rect, resize: false);
                 m.Result = (IntPtr)1;
                 return;
             }
@@ -1430,6 +1436,7 @@ namespace NoFences
                         rect.Bottom = rect.Top + minHeight;
                 }
                 Marshal.StructureToPtr(rect, m.LParam, true);
+                ApplyLiveMoveSizeRect(rect, resize: true);
                 m.Result = (IntPtr)1; // 表示已处理
                 return;
             }
@@ -2824,6 +2831,34 @@ namespace NoFences
         protected override bool ShowWithoutActivation
         {
             get { return true; }
+        }
+
+        /// <summary>
+        /// 分区窗口不可激活：启动器等前台窗口隐藏后，系统不会把前台交给分区；
+        /// 否则随后缺少前台权限的全屏游戏会被放到分区下方。菜单与对话框使用各自窗口激活。
+        /// </summary>
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams createParams = base.CreateParams;
+                createParams.ExStyle |= (int)ExtendedWindowStyles.WS_EX_NOACTIVATE;
+                return createParams;
+            }
+        }
+
+        /// <summary>
+        /// 不可激活窗口的系统移动/调整大小循环不会实时更新窗口，按拖动消息的建议矩形立即应用位置与尺寸。
+        /// </summary>
+        private void ApplyLiveMoveSizeRect(RECT rect, bool resize)
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated)
+                return;
+
+            uint flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+            if (!resize)
+                flags |= SWP_NOSIZE;
+            SetWindowPos(Handle, IntPtr.Zero, rect.Left, rect.Top, rect.Width, rect.Height, flags);
         }
 
         /// <summary>

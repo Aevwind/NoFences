@@ -58,7 +58,7 @@
 ## 窗口、DPI 与折叠
 
 - [Program.cs](NoFences/Program.cs) 使用命名 `Mutex("No_fences")` 强制单实例；`Application.Run()` 无主窗体，各栅栏独立显示，最后一个窗口关闭时退出应用。
-- [DesktopUtil.GlueToDesktop](NoFences/Win32/DesktopUtil.cs) 设置 `GWL_HWNDPARENT` 为 `Progman`，找不到时回退承载桌面的 `WorkerW`；不是把窗口改为普通子控件。`WS_EX_TOOLWINDOW` 隐藏 Alt+Tab 项。
+- [DesktopUtil.GlueToDesktop](NoFences/Win32/DesktopUtil.cs) 设置 `GWL_HWNDPARENT` 为 `Progman`，找不到时回退承载桌面的 `WorkerW`；不是把窗口改为普通子控件。`WS_EX_TOOLWINDOW` 隐藏 Alt+Tab 项。分区通过 `CreateParams` 设置 `WS_EX_NOACTIVATE`，避免启动器隐藏后系统把前台交给分区，导致随后缺少前台权限的全屏游戏被放到分区下方；因此 `WM_MOVING` / `WM_SIZING` 必须用 `SetWindowPos` 实时应用建议矩形，不能移除。
 - 当前交互栅栏可临时使用 `HWND_TOPMOST`，通过低级鼠标钩子和前台窗口事件在外部点击、Alt+Tab、菜单结束时归还桌面层级。保持 `KeepInteractedFenceOnTop`、`ReturnFenceToDesktop`、`PreserveFenceZOrder` 配套；关闭窗口时卸载钩子，委托生命周期覆盖原生回调。
 - 不要在 `WM_SETFOCUS` 时把窗口推至 `HWND_BOTTOM`，会使重叠分区交替沉底。也不要让临时置顶状态遗留到普通应用窗口之上。
 - `App.config` 与 `app.manifest` 均声明 `PerMonitorV2`。`FenceInfo.Width/Height`、位置使用设备像素，`LastDpi` 用于离线 DPI 变化后的缩放；标题字号、标题栏尺寸与内边距使用逻辑像素。
