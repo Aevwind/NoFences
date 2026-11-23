@@ -709,6 +709,7 @@ namespace NoFences
             UpdateStyles();
             InitializeScaleSubMenu();
             InitializeSortSubMenu();
+            InitializeFolderPanelMenu();
             shellContextMenu.MenuClosed += ShellContextMenu_MenuClosed;
             MouseDown += FenceWindow_MouseDown;
             MouseUp += FenceWindow_MouseUp;
@@ -774,6 +775,8 @@ namespace NoFences
             this.MouseWheel += FenceWindow_MouseWheel;
             thumbnailProvider.IconThumbnailLoaded += ThumbnailProvider_IconThumbnailLoaded;
             InitializeManagedItemsWatcher();
+            InitializeFolderPanelSource();
+            DragOver += FenceWindow_DragEnter;
 
             ReloadFonts();
 
@@ -996,6 +999,7 @@ namespace NoFences
         /// </summary>
         private void InitializeManagedItemsWatcher()
         {
+            if (fenceInfo.IsFolderPanel) return;
             try
             {
                 string dataDirectory = Path.Combine(
@@ -1164,6 +1168,7 @@ namespace NoFences
             SetContextMenuIcon(sortToolStripMenuItem, ThemedMenuIcon.Sort);
             SetContextMenuIcon(themeToolStripMenuItem, ThemedMenuIcon.Settings);
             SetContextMenuIcon(newFenceToolStripMenuItem, ThemedMenuIcon.NewFence);
+            SetContextMenuIcon(folderPanelToolStripMenuItem, ThemedMenuIcon.NewFence);
             SetContextMenuIcon(exitToolStripMenuItem, ThemedMenuIcon.CloseFence);
             SetContextMenuIcon(quitApplicationToolStripMenuItem, ThemedMenuIcon.QuitApplication);
         }
@@ -1194,6 +1199,8 @@ namespace NoFences
             darkModeToolStripMenuItem.Image = null;
             autoSnapToolStripMenuItem.Image = null;
             newFenceToolStripMenuItem.Image = null;
+            if (folderPanelToolStripMenuItem != null)
+                folderPanelToolStripMenuItem.Image = null;
             exitToolStripMenuItem.Image = null;
             quitApplicationToolStripMenuItem.Image = null;
 
@@ -1577,6 +1584,7 @@ namespace NoFences
             {
                 if (previous.appContextMenu != null && previous.appContextMenu.Visible)
                     previous.appContextMenu.Close(ToolStripDropDownCloseReason.AppClicked);
+                previous.CancelFolderShellMenu();
                 previous.ReturnFenceToDesktop();
             }
 
@@ -1647,14 +1655,14 @@ namespace NoFences
         }
 
         /// <summary>单独激活菜单宿主并保持当前分区层级，避免未激活的面板使 WinForms 菜单误判失焦。</summary>
-        private void BeginContextMenuInteraction()
+        private void BeginContextMenuInteraction(IntPtr nativeOwner = default(IntPtr))
         {
             isContextMenuInteraction = true;
             KeepInteractedFenceOnTop();
 
             // 与 NotifyIcon 的菜单处理一致：先激活独立的隐藏宿主，使 WinForms 记录有效的活动窗口。
             // 此宿主没有 Progman 所有者，激活它不会连带抬高共享桌面所有者的其他分区。
-            IntPtr menuOwner = shellContextMenu.Handle;
+            IntPtr menuOwner = nativeOwner != IntPtr.Zero ? nativeOwner : shellContextMenu.Handle;
             if (SetForegroundWindow(menuOwner))
                 interactionForegroundWindow = menuOwner; // 同步记录，避免延迟通知漏掉紧接着的 Alt+Tab。
             else
@@ -1683,6 +1691,7 @@ namespace NoFences
         /// <summary>在应用菜单显示前保护面板层级，菜单取消打开或抛出异常时及时解除保护。</summary>
         private void ShowAppContextMenu(Point location)
         {
+            CancelFolderShellMenu();
             BeginContextMenuInteraction();
             try
             {
@@ -1818,7 +1827,12 @@ namespace NoFences
             if (appContextMenu != null && appContextMenu.Visible)
                 appContextMenu.Close(ToolStripDropDownCloseReason.AppFocusChange);
             else if (isContextMenuInteraction)
-                EndMenu();
+            {
+                if (folderShellMenuLoading || folderShellMenuShowing)
+                    CancelFolderShellMenu();
+                else
+                    EndMenu();
+            }
         }
 
         /// <summary>按窗口句柄识别当前菜单及展开的子菜单，避免鼠标停在菜单时误判前台切换。</summary>
@@ -1867,6 +1881,13 @@ namespace NoFences
         /// <summary>点击菜单、面板及其对话框时保留交互；点击其他窗口时解除置顶并关闭应用菜单。</summary>
         private void ProcessInteractionMouseDown(Point screenPoint)
         {
+            if (folderShellMenuLoading)
+            {
+                bool insideFence = IsPointInsideFenceInteraction(screenPoint);
+                CancelFolderShellMenu(keepInFront: insideFence);
+                if (!insideFence)
+                    return;
+            }
             if (appContextMenu != null && appContextMenu.Visible)
             {
                 if (IsPointInsideOpenContextMenu(screenPoint))
@@ -1895,7 +1916,8 @@ namespace NoFences
             IntPtr current = GetAncestor(window, 2); // GA_ROOT：先从子控件找到顶层窗口。
             for (int depth = 0; current != IntPtr.Zero && depth < 32; depth++)
             {
-                if (current == Handle || current == shellContextMenu.Handle)
+                if (current == Handle || current == shellContextMenu.Handle ||
+                    (folderShellMenuWorker != null && current == folderShellMenuWorker.Handle))
                     return true;
                 current = GetWindow(current, 4); // GW_OWNER：仅沿当前窗口的拥有者链查找。
             }
@@ -2103,7 +2125,9 @@ namespace NoFences
         {
             if (MessageBox.Show(
                 this,
-                ThemeText.RemoveFenceQuestion,
+                fenceInfo.IsFolderPanel
+                    ? ThemeText.Key(NoFences.Localization.LKeys.FolderPanelRemoveQuestion)
+                    : ThemeText.RemoveFenceQuestion,
                 ThemeText.RemoveFenceTitle,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question) == DialogResult.Yes)
@@ -2177,6 +2201,7 @@ namespace NoFences
         /// <summary>从应用右键菜单进入图标多选管理模式。</summary>
         private void iconManagementToolStripMenuItem_Click(object sender, EventArgs e)
         {
+            if (fenceInfo.IsFolderPanel) return;
             ExpandFromMinified(animate: false);
 
             isIconManagementMode = true;
@@ -2279,6 +2304,7 @@ namespace NoFences
         /// </summary>
         private void ApplyContextMenuLocalization()
         {
+            ApplyFolderPanelLocalization();
             deleteItemToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuDeleteItem);
             lockedToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuLock);
             minifyToolStripMenuItem.Text = ThemeText.Key(NoFences.Localization.LKeys.MenuMinify);
@@ -2310,7 +2336,7 @@ namespace NoFences
         private void contextMenuStrip1_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
             ApplyContextMenuLocalization();
-            deleteItemToolStripMenuItem.Visible = hoveringItem != null;
+            ApplyFolderPanelMenuVisibility();
             iconManagementToolStripMenuItem.Enabled = !isIconManagementMode;
             if (sortToolStripMenuItem != null)
             {
@@ -2329,6 +2355,13 @@ namespace NoFences
         /// <summary>拖放进入：仅接受文件拖放（锁定状态下拒绝）。</summary>
         private void FenceWindow_DragEnter(object sender, DragEventArgs e)
         {
+            e.Effect = DragDropEffects.None;
+            if (fenceInfo.IsFolderPanel)
+            {
+                e.Effect = GetFolderDropEffect(e);
+                if (e.Effect != DragDropEffects.None && isMinified) ExpandFromMinified();
+                return;
+            }
             if (e.Data.GetDataPresent(DataFormats.FileDrop) &&
                 !lockedToolStripMenuItem.Checked &&
                 !isIconManagementMode)
@@ -2341,10 +2374,18 @@ namespace NoFences
         /// </summary>
         private void FenceWindow_DragDrop(object sender, DragEventArgs e)
         {
-            if (isIconManagementMode)
+            if (isIconManagementMode || fenceInfo.Locked)
                 return;
 
-            var dropped = (string[])e.Data.GetData(DataFormats.FileDrop);
+            var dropped = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (dropped == null || dropped.Length == 0) return;
+            if (fenceInfo.IsFolderPanel)
+            {
+                DragDropEffects effect = GetFolderDropEffect(e);
+                e.Effect = effect != DragDropEffects.None && TransferToFolder(dropped, effect == DragDropEffects.Move)
+                    ? effect : DragDropEffects.None;
+                return;
+            }
             var errors = new List<string>();
             foreach (var file in dropped)
             {
@@ -2402,6 +2443,11 @@ namespace NoFences
                     Size dragSize = SystemInformation.DragSize;
                     if (dx > dragSize.Width || dy > dragSize.Height)
                     {
+                        if (fenceInfo.IsFolderPanel)
+                        {
+                            BeginFolderFileDrag();
+                            return;
+                        }
                         isDraggingItem = true;
                         Capture = true;
                         suppressNextClick = true;
@@ -2416,6 +2462,7 @@ namespace NoFences
             }
 
             string hitPath = HitTestEntry(e.Location);
+            QueueShellMenuWarmup(hitPath);
 
             int footerTarget = 0;
             if (isIconManagementMode)
@@ -2448,7 +2495,8 @@ namespace NoFences
         /// <summary>鼠标离开：尝试向标题栏方向收起窗口。选中状态不取消，由用户点击其他条目或空白区域来改变。</summary>
         private void FenceWindow_MouseLeave(object sender, EventArgs e)
         {
-            if (isDraggingItem || isContextMenuInteraction)
+            QueueShellMenuWarmup(null);
+            if (isDraggingItem || isFolderFileDrag || isContextMenuInteraction)
                 return;
 
             iconManagementHoverTarget = 0;
@@ -2696,6 +2744,7 @@ namespace NoFences
         /// </summary>
         private void Minify(bool? animate = null)
         {
+            if (isFolderFileDrag) return;
             bool menuOpen = isContextMenuInteraction || (appContextMenu != null && appContextMenu.Visible) ||
                 (scaleToolStripMenuItem?.DropDown != null && scaleToolStripMenuItem.DropDown.Visible);
             if (!isIconManagementMode && !menuOpen && minifyToolStripMenuItem.Checked && !isMinified)
@@ -2914,6 +2963,7 @@ namespace NoFences
                 ? GetIconManagementFooterHeight()
                 : 0;
             Rectangle contentViewport = GetContentViewport(managementFooterHeight);
+            DrawFolderPanelStatus(e.Graphics, theme, contentViewport);
             IconGridLayout grid = PrepareIconGridLayout(contentViewport);
             Point mousePosition = PointToClient(MousePosition);
 
@@ -4127,6 +4177,10 @@ namespace NoFences
         /// <summary>窗口关闭：如果最后一个栅栏关闭则退出应用。</summary>
         private void FenceWindow_FormClosed(object sender, FormClosedEventArgs e)
         {
+            folderPanelClosed = true;
+            DisposeFolderShellMenu();
+            folderPanelSource?.Dispose();
+            folderPanelSource = null;
             if (interactedFence == this)
                 interactedFence = null;
             isContextMenuInteraction = false;
@@ -4377,6 +4431,11 @@ namespace NoFences
             {
                 // 右键条目 → Windows Shell 右键菜单
                 string shellItem = hoveringItem;
+                if (fenceInfo.IsFolderPanel)
+                {
+                    ShowFolderShellMenu(shellItem, MousePosition);
+                    return;
+                }
                 bool wasManaged = FenceManager.Instance.IsManagedDesktopEntry(
                     fenceInfo,
                     shellItem);
@@ -4385,9 +4444,10 @@ namespace NoFences
                     BeginContextMenuInteraction();
                     try
                     {
-                        shellContextMenu.ShowContextMenu(
-                            new[] { new FileInfo(shellItem) },
-                            MousePosition);
+                        if (Directory.Exists(shellItem))
+                            shellContextMenu.ShowContextMenu(new[] { new DirectoryInfo(shellItem) }, MousePosition);
+                        else
+                            shellContextMenu.ShowContextMenu(new[] { new FileInfo(shellItem) }, MousePosition);
                     }
                     finally
                     {
@@ -4549,29 +4609,37 @@ namespace NoFences
                     }
                     else if (targetFence != null && !targetFence.IsDisposed)
                     {
-                        // Case B: 拖动到其他分区移动图标
-                        string error;
-                        if (FenceManager.Instance.TryMoveEntry(
-                            this.fenceInfo,
-                            targetFence.fenceInfo,
-                            draggedPath,
-                            targetDropIndex,
-                            out error))
+                        if (targetFence.fenceInfo.IsFolderPanel)
                         {
-                            if (selectedItem == draggedPath) selectedItem = null;
-                            if (hoveringItem == draggedPath) hoveringItem = null;
-                            InvalidateEntry(draggedPath);
-                            this.Refresh();
-                            targetFence.Refresh();
+                            // 普通分区保存引用；拖入目录复制真实内容，保留原引用和快捷方式事务。
+                            targetFence.TransferToFolder(new[] { draggedPath }, move: false);
                         }
-                        else if (!string.IsNullOrEmpty(error))
+                        else
                         {
-                            MessageBox.Show(
-                                this,
-                                error,
-                                ThemeText.Key(NoFences.Localization.LKeys.MoveItemTitle),
-                                MessageBoxButtons.OK,
-                                MessageBoxIcon.Warning);
+                            // Case B: 拖动到其他分区移动图标
+                            string error;
+                            if (FenceManager.Instance.TryMoveEntry(
+                                this.fenceInfo,
+                                targetFence.fenceInfo,
+                                draggedPath,
+                                targetDropIndex,
+                                out error))
+                            {
+                                if (selectedItem == draggedPath) selectedItem = null;
+                                if (hoveringItem == draggedPath) hoveringItem = null;
+                                InvalidateEntry(draggedPath);
+                                this.Refresh();
+                                targetFence.Refresh();
+                            }
+                            else if (!string.IsNullOrEmpty(error))
+                            {
+                                MessageBox.Show(
+                                    this,
+                                    error,
+                                    ThemeText.Key(NoFences.Localization.LKeys.MoveItemTitle),
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Warning);
+                            }
                         }
                     }
                     else
@@ -4607,6 +4675,11 @@ namespace NoFences
         /// <summary>拦截键盘消息：按下 Esc 键时取消当前图标拖拽。</summary>
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            if (fenceInfo.IsFolderPanel && keyData == (Keys.Control | Keys.V))
+            {
+                PasteToFolder();
+                return true;
+            }
             if (keyData == Keys.Escape && isDraggingItem)
             {
                 CancelItemDrag();
@@ -4669,9 +4742,16 @@ namespace NoFences
                 {
                     target.ExpandFromMinified();
                 }
-                Point clientPt = target.PointToClient(screenPoint);
-                int targetIdx = target.GetDropTargetIndex(clientPt);
-                target.SetDropTargetIndex(targetIdx);
+                if (target.fenceInfo.IsFolderPanel)
+                {
+                    target.ClearDropIndicator();
+                }
+                else
+                {
+                    Point clientPt = target.PointToClient(screenPoint);
+                    int targetIdx = target.GetDropTargetIndex(clientPt);
+                    target.SetDropTargetIndex(targetIdx);
+                }
             }
             else
             {

@@ -57,6 +57,15 @@ namespace NoFences.Localization
         public const string MenuDarkMode = "menu.darkMode";
         public const string MenuAutoSnap = "menu.autoSnap";
         public const string MenuNewFence = "menu.newFence";
+        public const string MenuFolderPanel = "folderPanel.menuFolderPanel";
+        public const string MenuPasteToFolder = "folderPanel.menuPasteToFolder";
+        public const string SelectFolderPanelFolder = "folderPanel.selectFolderPanelFolder";
+        public const string FolderPanelCreateFailed = "folderPanel.folderPanelCreateFailed";
+        public const string FolderPanelUnavailable = "folderPanel.folderPanelUnavailable";
+        public const string FolderPanelDirectOperations = "folderPanel.folderPanelDirectOperations";
+        public const string FolderPanelTransferFailed = "folderPanel.folderPanelTransferFailed";
+        public const string FolderPanelInvalidDrop = "folderPanel.folderPanelInvalidDrop";
+        public const string FolderPanelRemoveQuestion = "folderPanel.folderPanelRemoveQuestion";
         public const string MenuRemoveFence = "menu.removeFence";
         public const string MenuQuitApp = "menu.quitApp";
 

@@ -45,6 +45,15 @@ namespace NoFences.Localization
             d[LKeys.MenuDarkMode] = "黑暗模式";
             d[LKeys.MenuAutoSnap] = "自動吸附";
             d[LKeys.MenuNewFence] = "新建桌面分區";
+            d[LKeys.MenuFolderPanel] = "資料夾面板";
+            d[LKeys.MenuPasteToFolder] = "貼上至資料夾";
+            d[LKeys.SelectFolderPanelFolder] = "選擇要顯示在面板中的資料夾";
+            d[LKeys.FolderPanelCreateFailed] = "無法建立資料夾面板。";
+            d[LKeys.FolderPanelUnavailable] = "無法讀取資料夾，恢復連線後會自動重新整理。";
+            d[LKeys.FolderPanelDirectOperations] = "請透過檔案選單或拖放直接操作資料夾中的檔案。";
+            d[LKeys.FolderPanelTransferFailed] = "檔案操作未完成（錯誤代碼 {0}）。";
+            d[LKeys.FolderPanelInvalidDrop] = "不能將資料夾放入自身或其子資料夾。";
+            d[LKeys.FolderPanelRemoveQuestion] = "確定要移除這個資料夾面板嗎？資料夾及其中的檔案會保留。";
             d[LKeys.MenuRemoveFence] = "移除桌面分區";
             d[LKeys.MenuQuitApp] = "結束程式";
 

@@ -45,6 +45,15 @@ namespace NoFences.Localization
             d[LKeys.MenuDarkMode] = "黑暗模式";
             d[LKeys.MenuAutoSnap] = "自动吸附";
             d[LKeys.MenuNewFence] = "新建桌面分区";
+            d[LKeys.MenuFolderPanel] = "文件夹面板";
+            d[LKeys.MenuPasteToFolder] = "粘贴到文件夹";
+            d[LKeys.SelectFolderPanelFolder] = "选择要显示在面板中的文件夹";
+            d[LKeys.FolderPanelCreateFailed] = "无法创建文件夹面板。";
+            d[LKeys.FolderPanelUnavailable] = "无法读取文件夹，恢复连接后会自动刷新。";
+            d[LKeys.FolderPanelDirectOperations] = "请通过文件菜单或拖放直接操作文件夹中的文件。";
+            d[LKeys.FolderPanelTransferFailed] = "文件操作未完成（错误代码 {0}）。";
+            d[LKeys.FolderPanelInvalidDrop] = "不能将文件夹放入自身或其子文件夹。";
+            d[LKeys.FolderPanelRemoveQuestion] = "确定要移除这个文件夹面板吗？文件夹及其中的文件会保留。";
             d[LKeys.MenuRemoveFence] = "移除桌面分区";
             d[LKeys.MenuQuitApp] = "退出程序";
 

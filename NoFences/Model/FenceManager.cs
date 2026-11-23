@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml;
 using System.Xml.Serialization;
+using NoFences.Localization;
 
 namespace NoFences.Model
 {
@@ -95,6 +96,14 @@ namespace NoFences.Model
                         CancelPendingRemoval(fence, ref operationError);
                         warnings.Add(fence.Name + "：" + operationError);
                     }
+                    else if (fence.IsFolderPanel)
+                    {
+                        // 文件夹视图不重新托管桌面文件；如存在旧记录，只执行安全恢复。
+                        if (!desktopShortcutManager.TryReleaseAll(
+                            fence, GetItemsFolderPath(fence), UpdateFence, out operationError))
+                            warnings.Add(fence.Name + "：" + operationError);
+                        fence.Files = new List<string>();
+                    }
                     else if (!desktopShortcutManager.PrepareForApplicationRun(
                         fence,
                         GetItemsFolderPath(fence),
@@ -130,9 +139,27 @@ namespace NoFences.Model
         /// </summary>
         public void CreateFence(string name)
         {
+            CreateFence(name, FenceType.Icons, string.Empty);
+        }
+
+        /// <summary>创建绑定真实目录的面板；取消选择时不会调用此方法。</summary>
+        public void CreateFolderPanel(string folderPath)
+        {
+            string fullPath = Path.GetFullPath(folderPath);
+            // 验证目录可读取，但不把目录清单持久化或托管其中的快捷方式。
+            using (var entries = Directory.EnumerateFileSystemEntries(fullPath).GetEnumerator())
+                entries.MoveNext();
+            string name = Path.GetFileName(fullPath.TrimEnd('\\', '/'));
+            CreateFence(string.IsNullOrEmpty(name) ? fullPath : name, FenceType.Folder, fullPath);
+        }
+
+        private void CreateFence(string name, FenceType type, string folderPath)
+        {
             var fenceInfo = new FenceInfo(Guid.NewGuid())
             {
                 Name = name,
+                Type = type,
+                FolderPath = folderPath,
                 PosX = 100,
                 PosY = 250,
                 Height = 300,
@@ -151,6 +178,11 @@ namespace NoFences.Model
         /// </summary>
         public bool TryAddEntry(FenceInfo info, string path, out string error)
         {
+            if (info.IsFolderPanel)
+            {
+                error = LocalizationManager.Get(LKeys.FolderPanelDirectOperations);
+                return false;
+            }
             try
             {
                 if (info.Files == null)
@@ -196,6 +228,11 @@ namespace NoFences.Model
         /// </summary>
         public bool TryRemoveEntry(FenceInfo info, string path, out string error)
         {
+            if (info.IsFolderPanel)
+            {
+                error = LocalizationManager.Get(LKeys.FolderPanelDirectOperations);
+                return false;
+            }
             try
             {
                 if (desktopShortcutManager.IsTrackedEntry(info, path))
@@ -348,6 +385,12 @@ namespace NoFences.Model
             if (source == null || target == null || ReferenceEquals(source, target))
             {
                 error = null;
+                return false;
+            }
+
+            if (source.IsFolderPanel || target.IsFolderPanel)
+            {
+                error = LocalizationManager.Get(LKeys.FolderPanelDirectOperations);
                 return false;
             }
 

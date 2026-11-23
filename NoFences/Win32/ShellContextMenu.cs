@@ -37,6 +37,7 @@ namespace Peter
         public event EventHandler MenuClosed;
 
         private bool disposed;
+        private IntPtr preparedMenu;
         #region Constructor
         /// <summary>Default constructor</summary>
         public ShellContextMenu()
@@ -124,6 +125,8 @@ namespace Peter
         /// <returns>true if the message has been handled, false otherwise</returns>
         protected override void WndProc(ref Message m)
         {
+            if (m.Msg == 0x001F) // WM_CANCELMODE：允许另一线程取消正在跟踪的菜单。
+                EndMenu();
             if (m.Msg == (int)WM.EXITMENULOOP)
                 MenuClosed?.Invoke(this, EventArgs.Empty);
 
@@ -202,6 +205,11 @@ namespace Peter
         /// </summary>
         private void ReleaseAll()
         {
+            if (preparedMenu != IntPtr.Zero)
+            {
+                DestroyMenu(preparedMenu);
+                preparedMenu = IntPtr.Zero;
+            }
             if (null != _oContextMenu3)
             {
                 TryReleaseComObject(_oContextMenu3);
@@ -392,7 +400,7 @@ namespace Peter
         /// <returns>Array of PIDLs</returns>
         protected IntPtr[] GetPIDLs(DirectoryInfo[] arrFI)
         {
-            if (null == arrFI || 0 == arrFI.Length)
+            if (null == arrFI || 0 == arrFI.Length || null == arrFI[0] || null == arrFI[0].Parent)
             {
                 return null;
             }
@@ -489,8 +497,37 @@ namespace Peter
         /// <param name="pointScreen">Where to show the menu</param>
         private void ShowContextMenu(Point pointScreen)
         {
-            IntPtr pMenu = IntPtr.Zero,
-                iContextMenuPtr = IntPtr.Zero,
+            try
+            {
+                PrepareContextMenuCore((Control.ModifierKeys & Keys.Shift) != 0);
+                ShowPreparedContextMenu(pointScreen);
+            }
+            finally { ReleaseAll(); }
+        }
+
+        /// <summary>提前构建菜单；必须和显示、命令执行及释放处于同一个 STA 线程。</summary>
+        public void PrepareContextMenu(string path, bool directory)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(ShellContextMenu));
+            ReleaseAll();
+            try
+            {
+                _arrPIDLs = directory
+                    ? GetPIDLs(new[] { new DirectoryInfo(path) })
+                    : GetPIDLs(new[] { new FileInfo(path) });
+                PrepareContextMenuCore(extended: false);
+            }
+            catch
+            {
+                ReleaseAll();
+                throw;
+            }
+        }
+
+        /// <summary>查询完整 Shell 菜单及其子菜单接口，保留原生扩展和命令。</summary>
+        private void PrepareContextMenuCore(bool extended)
+        {
+            IntPtr iContextMenuPtr = IntPtr.Zero,
                 iContextMenuPtr2 = IntPtr.Zero,
                 iContextMenuPtr3 = IntPtr.Zero;
 
@@ -498,26 +535,27 @@ namespace Peter
             {
                 if (null == _arrPIDLs)
                 {
-                    ReleaseAll();
-                    return;
+                    throw new ShellContextMenuException("Failed to parse the shell item");
                 }
 
                 if (false == GetContextMenuInterfaces(_oParentFolder, _arrPIDLs, out iContextMenuPtr))
                 {
-                    ReleaseAll();
-                    return;
+                    throw new ShellContextMenuException("Failed to get the shell context menu");
                 }
 
-                pMenu = CreatePopupMenu();
+                preparedMenu = CreatePopupMenu();
+                if (preparedMenu == IntPtr.Zero)
+                    throw new ShellContextMenuException("Failed to create the popup menu");
 
                 int nResult = _oContextMenu.QueryContextMenu(
-                    pMenu,
+                    preparedMenu,
                     0,
                     CMD_FIRST,
                     CMD_LAST,
                     CMF.EXPLORE |
                     CMF.NORMAL |
-                    ((Control.ModifierKeys & Keys.Shift) != 0 ? CMF.EXTENDEDVERBS : 0));
+                    (extended ? CMF.EXTENDEDVERBS : 0));
+                Marshal.ThrowExceptionForHR(nResult);
 
                 if (Marshal.QueryInterface(
                     iContextMenuPtr,
@@ -538,34 +576,9 @@ namespace Peter
                         typeof(IContextMenu3));
                 }
 
-                uint nSelected = TrackPopupMenuEx(
-                    pMenu,
-                    TPM.RETURNCMD,
-                    pointScreen.X,
-                    pointScreen.Y,
-                    this.Handle,
-                    IntPtr.Zero);
-
-                DestroyMenu(pMenu);
-                pMenu = IntPtr.Zero;
-
-                if (nSelected != 0)
-                {
-                    InvokeCommand(_oContextMenu, nSelected, _strParentFolder, pointScreen);
-                }
-            }
-            catch
-            {
-                throw;
             }
             finally
             {
-                //hook.Uninstall();
-                if (pMenu != IntPtr.Zero)
-                {
-                    DestroyMenu(pMenu);
-                }
-
                 if (iContextMenuPtr != IntPtr.Zero)
                     Marshal.Release(iContextMenuPtr);
 
@@ -575,9 +588,26 @@ namespace Peter
                 if (iContextMenuPtr3 != IntPtr.Zero)
                     Marshal.Release(iContextMenuPtr3);
 
-                ReleaseAll();
             }
         }
+
+        /// <summary>显示已准备的菜单；菜单结束事件仍先于命令执行，使用后立即释放。</summary>
+        public void ShowPreparedContextMenu(Point pointScreen)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(ShellContextMenu));
+            try
+            {
+                if (preparedMenu == IntPtr.Zero) return;
+                uint selected = TrackPopupMenuEx(preparedMenu, TPM.RETURNCMD,
+                    pointScreen.X, pointScreen.Y, Handle, IntPtr.Zero);
+                DestroyMenu(preparedMenu);
+                preparedMenu = IntPtr.Zero;
+                if (selected != 0)
+                    InvokeCommand(_oContextMenu, selected, _strParentFolder, pointScreen);
+            }
+            finally { ReleaseAll(); }
+        }
+
         #endregion
 
         #region Local variabled
@@ -624,6 +654,9 @@ namespace Peter
         // The DestroyMenu function destroys the specified menu and frees any memory that the menu occupies.
         [DllImport("user32", SetLastError = true, CharSet = CharSet.Auto)]
         private static extern bool DestroyMenu(IntPtr hMenu);
+
+        [DllImport("user32.dll")]
+        private static extern bool EndMenu();
 
         #endregion
 

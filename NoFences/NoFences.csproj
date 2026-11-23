@@ -69,10 +69,17 @@
     <Compile Include="Model\FenceEntry.cs" />
     <Compile Include="Model\FenceInfo.cs" />
     <Compile Include="Model\FenceManager.cs" />
+    <Compile Include="Model\FolderPanelSource.cs" />
     <Compile Include="FenceWindow.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="FenceWindow.Designer.cs">
+      <DependentUpon>FenceWindow.cs</DependentUpon>
+    </Compile>
+    <Compile Include="FenceWindow.FolderPanel.cs">
+      <DependentUpon>FenceWindow.cs</DependentUpon>
+    </Compile>
+    <Compile Include="FenceWindow.ShellMenu.cs">
       <DependentUpon>FenceWindow.cs</DependentUpon>
     </Compile>
     <Compile Include="Program.cs" />
@@ -111,6 +118,8 @@
     <Compile Include="Win32\DropShadow.cs" />
     <Compile Include="Win32\IconUtil.cs" />
     <Compile Include="Win32\ShellContextMenu.cs" />
+    <Compile Include="Win32\ShellFileTransfer.cs" />
+    <Compile Include="Win32\ShellMenuWorker.cs" />
     <Compile Include="Win32\WindowUtil.cs" />
     <EmbeddedResource Include="EditDialog.resx">
       <DependentUpon>EditDialog.cs</DependentUpon>

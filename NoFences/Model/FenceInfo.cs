@@ -1,8 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Xml.Serialization;
 
 namespace NoFences.Model
 {
+    /// <summary>分区内容来源；旧配置默认使用手动管理的图标列表。</summary>
+    public enum FenceType
+    {
+        Icons = 0,
+        Folder = 1
+    }
+
     /// <summary>栅栏标题栏位置枚举。</summary>
     public enum FenceTitlePosition
     {
@@ -46,6 +54,15 @@ namespace NoFences.Model
 
         /// <summary>栅栏显示名称</summary>
         public string Name { get; set; }
+
+        /// <summary>分区类型，缺省值兼容已有普通分区。</summary>
+        public FenceType Type { get; set; } = FenceType.Icons;
+
+        /// <summary>文件夹面板绑定的目录；只保存引用，不接管目录内的文件。</summary>
+        public string FolderPath { get; set; } = string.Empty;
+
+        [XmlIgnore]
+        public bool IsFolderPanel => Type == FenceType.Folder;
 
         /// <summary>窗口 X 坐标（屏幕像素）</summary>
         public int PosX { get; set; }
@@ -135,6 +152,9 @@ namespace NoFences.Model
 
         /// <summary>栅栏内包含的文件/文件夹路径列表</summary>
         public List<string> Files { get; set; } = new List<string>();
+
+        /// <summary>文件夹内容由磁盘实时读取，不把过期清单写入分区元数据。</summary>
+        public bool ShouldSerializeFiles() => !IsFolderPanel;
 
         /// <summary>
         /// 由当前栅栏临时移出桌面的快捷方式及其恢复信息。

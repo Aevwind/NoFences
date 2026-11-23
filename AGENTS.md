@@ -24,6 +24,7 @@
 | [Program.cs](NoFences/Program.cs) | 单实例、初始化、恢复命令、应用退出恢复 |
 | [FenceWindow.cs](NoFences/FenceWindow.cs) | 栅栏绘制、DPI、窗口层级、折叠、选择、拖拽、排序和菜单 |
 | [Model/FenceManager.cs](NoFences/Model/FenceManager.cs) | 分区加载、元数据持久化、条目操作和跨分区移动 |
+| [FenceWindow.FolderPanel.cs](NoFences/FenceWindow.FolderPanel.cs) / [Model/FolderPanelSource.cs](NoFences/Model/FolderPanelSource.cs) | 文件夹面板菜单、后台目录快照、监控和真实文件拖放 |
 | [Model/DesktopShortcutManager.cs](NoFences/Model/DesktopShortcutManager.cs) | 桌面快捷方式托管、恢复与 Shell 操作后的状态校正 |
 | [Model/AppSettingsManager.cs](NoFences/Model/AppSettingsManager.cs) | 基础设置、界面语言、自启动注册表和配置写盘 |
 | [Theming](NoFences/Theming) | 主题、设置草稿与绑定、自绘控件、菜单布局和图标 |
@@ -40,6 +41,7 @@
   - `__theme_settings.xml`：全局主题配置。
 - 数据目录控件只读，显示真实使用的默认目录；`AppSettings.Normalize()` 将旧版未生效的自定义目录归一为实际目录。当前未实现数据迁移，也不再向无效目标目录写配置副本。实现迁移时需统一正常启动、恢复命令、主题、文件监控及已有托管路径，不能只替换一个 `basePath`。
 - [FenceInfo](NoFences/Model/FenceInfo.cs) 的属性名直接对应 XML 节点，**不可删除或重命名**。新增属性应提供兼容旧配置的默认值，并处理可能为空的集合。删除/重命名可能造成数据丢失或恢复失败，不能依赖反序列化必然报错。
+- `FenceInfo.Type` 默认为 `Icons`，`Folder` 类型使用 `FolderPath` 绑定真实目录。文件夹面板的 `Files` 仅为运行时快照，`ShouldSerializeFiles()` 不写出该快照；普通分区仍按原格式保存路径。文件夹面板不托管快捷方式，隐藏图标管理及仅移除引用的菜单，删除面板只清理独立的分区元数据。文件夹监控只枚举直接子项，后台读取后经 `BeginInvoke` 更新 UI，关闭时释放监控并丢弃迟到结果。
 - 同样保护 `DesktopShortcutInfo`、`AppSettings`、`ThemeSettings`、`ThemeDefinition` 的序列化字段、枚举名称及已有主题 ID。修改配置模型时同步检查克隆、归一化、差异比较和旧配置迁移逻辑。
 - `FenceInfo.TitlePadding` 是 `TitlePaddingX` 的旧格式兼容入口；`TitleLineHeight`、`ThemeDefinition.PreferDarkNativeMenus` 也是保留字段，不能因为当前绘制不读取而删除。`TitleLineHeight` 仍有历史初始化值，当前标题布局按固定行高 1 计算。
 - `FenceManager.UpdateFence` 在同目录写唯一临时文件、刷新到磁盘，再通过 `File.Replace` 保留备份；加载校验目录 GUID 与元数据 ID、限制 4 MiB，并尝试备份回退。保留这些保护和异常后的临时文件清理。
@@ -97,16 +99,18 @@
 - 自动更新检查入口明确标为未支持且不可交互，旧 `CheckForUpdates` 字段保留并归一为 `false`。完成真实版本检查后才能启用；数据目录迁移同样需要完成后端后再开放编辑。
 - 设置页调色板由 `SettingsPalette` 按明暗模式决定；应用菜单的几何结构由 `MenuThemeProfile` 决定，颜色来自主题。`ThemeUi` 递归应用所有子菜单并处理 DPI。
 - 模糊圆角优先使用可用的 DWM 原生圆角；回退自定义 `Form.Region` 时避免同时保留不匹配的 DWM 投影。图标、背景图片、字体、Region 和菜单图片的所有权及释放要成对；共享字体缓存不能由单个控件释放。
-- 用户可见文本通过 `ThemeText` / `LocalizationManager` / `LKeys` 获取；新增词条同步维护 `Lang.zh-CN.cs`、`Lang.zh-TW.cs`、`Lang.en-US.cs`。当前每种语言覆盖相同的 182 个键。
+- 用户可见文本通过 `ThemeText` / `LocalizationManager` / `LKeys` 获取；新增词条同步维护 `Lang.zh-CN.cs`、`Lang.zh-TW.cs`、`Lang.en-US.cs`。当前每种语言覆盖相同的 191 个键。
 - [ShellContextMenu.cs](NoFences/Win32/ShellContextMenu.cs) 是第三方 CodeProject 来源代码，位于 **`Peter` 命名空间**，通过 `using Peter;` 导入；保留来源信息。COM 接口方法顺序、原生结构体布局和字段不可按“未引用”盲删。
 - 条目普通右键显示 Windows Shell 菜单；Shift+右键或空白区域显示应用菜单。Shell 菜单只跟随原生明暗偏好，不使用应用自绘菜单的任意配色。
 - `ShellContextMenu.MenuClosed` 早于所选命令执行，用于及时解除临时置顶；托管路径需在菜单返回后校正，并由 `FileSystemWatcher` 补充异步剪切、重命名、删除和内容变更。监控回调经 `BeginInvoke` 回到 UI，并检查窗口是否关闭。
+- 文件夹面板的原生菜单通过 `ShellMenuWorker` 在独立 STA 消息线程上准备、显示、执行和释放，不能将这些 COM 对象直接移到线程池或 UI 线程。悬停预热仅缓存最后一个条目，按内容版本、剪贴板状态和短期有效期校验；外部点击、前台切换和关闭会取消迟到请求。菜单结束事件通过 UI `Invoke` 在命令执行前解除置顶，不能改成不等待的投递。`Verify-ShellMenus.ps1` 仅准备菜单、不显示，覆盖请求淘汰、缓存失效及关闭释放。
 - COM 原始接口指针、RCW 和 PIDL 分别管理；`GetTypedObjectForIUnknown` 不代替释放取得的原始指针。保留 `finally` 清理与异常路径处理。
 - 手写源代码的 `<summary>` XML 文档注释使用中文；第三方来源/许可注释保留原文。WM 常量继续使用 `using static NoFences.Win32.WindowUtil;` 导入。`Properties/*.Designer.cs` 等生成文件应随对应设计源维护。
 
 ## 手工验证重点
 
 - 文件操作：添加普通文件/目录与三类桌面快捷方式；重启、退出、移除、跨分区移动及恢复命令；同名冲突与只读/跨卷回退。
+- 文件夹面板：选择/取消目录、真实文件菜单与拖放/粘贴、外部增删改、目录断开后恢复、隐藏图标管理、移除面板后原文件保留。`Verify-Regressions.ps1` 会调用 `Verify-FolderPanels.ps1` 执行对应的隔离回归。
 - 窗口交互：重叠分区点击、两类菜单、外部点击、Alt+Tab、Win+D、锁定、自动吸附和拖拽取消。
 - DPI 与布局：不同 DPI 显示器间拖动、桌面 Ctrl+滚轮、10%~200% 缩放、四向标题栏、折叠动画及重启后的展开尺寸。
 - 渲染：一行、两行和超两行文件名；展开后的选择/悬停命中；滚动、图标多选与拖拽指示。

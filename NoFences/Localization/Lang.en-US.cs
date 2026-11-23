@@ -45,6 +45,15 @@ namespace NoFences.Localization
             d[LKeys.MenuDarkMode] = "Dark mode";
             d[LKeys.MenuAutoSnap] = "Auto snap";
             d[LKeys.MenuNewFence] = "New fence";
+            d[LKeys.MenuFolderPanel] = "Folder panel";
+            d[LKeys.MenuPasteToFolder] = "Paste into folder";
+            d[LKeys.SelectFolderPanelFolder] = "Choose a folder to display in the panel";
+            d[LKeys.FolderPanelCreateFailed] = "Could not create the folder panel.";
+            d[LKeys.FolderPanelUnavailable] = "The folder is unavailable. The panel will refresh when it becomes accessible.";
+            d[LKeys.FolderPanelDirectOperations] = "Use the file menu or drag and drop to work with files in this folder.";
+            d[LKeys.FolderPanelTransferFailed] = "The file operation did not complete (error code {0}).";
+            d[LKeys.FolderPanelInvalidDrop] = "A folder cannot be placed inside itself or one of its subfolders.";
+            d[LKeys.FolderPanelRemoveQuestion] = "Remove this folder panel? The folder and its files will be kept.";
             d[LKeys.MenuRemoveFence] = "Remove fence";
             d[LKeys.MenuQuitApp] = "Exit application";
 

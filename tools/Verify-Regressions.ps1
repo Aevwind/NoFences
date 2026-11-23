@@ -444,4 +444,6 @@ try {
     [Threading.SynchronizationContext]::SetSynchronizationContext($oldContext)
     $uiContext.Dispose()
 }
+. (Join-Path $PSScriptRoot 'Verify-FolderPanels.ps1')
+. (Join-Path $PSScriptRoot 'Verify-ShellMenus.ps1')
 Write-Output ('PASS: ' + $validationPassed + ' isolated regression assertions; ' + $gridSamples + ' grid differential samples; sandbox: ' + $validationRoot)
